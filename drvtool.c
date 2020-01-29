@@ -1426,7 +1426,7 @@ p_buffer(FILE *fp,
 
 void
 usage(FILE *fp) {
-  fprintf(fp, "Usage:\n  %s [<options>] [<actions>]\n",
+  fprintf(fp, "Usage:\n  %s [<options>] [<device> [<actions>]]\n",
 	  argv0);
   fprintf(fp, "\nOptions:\n");
   fprintf(fp, "  -h               Display this information\n");
@@ -1436,7 +1436,6 @@ usage(FILE *fp) {
   fprintf(fp, "  -d               Send TRIM commands to device\n");
   fprintf(fp, "  -p               Print last block\n");
   fprintf(fp, "  -C <type>        Checksum type (SHA224 - SHA256 - SHA512)\n");
-  fprintf(fp, "  -D <device>      Disk device\n");
   fprintf(fp, "  -T <time>        Limit test time\n");
   fprintf(fp, "  -P <num>         Passes [%d]\n", d_passes);
   fprintf(fp, "  -S <off>         Start offset [0]\n");
