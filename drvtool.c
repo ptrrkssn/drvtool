@@ -49,6 +49,7 @@
 #include <sha256.h>
 #include <sha512.h>
 #include <sys/sysctl.h>
+#include <camlib.h>
 
 
 char *argv0 = "drvtool";
@@ -137,7 +138,23 @@ typedef struct {
   char *provider_name;
   char *ident;
   char *physical_path;
+  
+  struct {
+    char *path;
+  } cam;
+  
 } DEVICE;
+
+
+
+typedef struct disk {
+  struct disk *next;
+  char *name;
+  DEVICE *dev;
+} DISK;
+
+DISK *disks = NULL;
+
 
 
 #define TEST_READ     0x0001
@@ -261,9 +278,7 @@ dev_sysctl(DEVICE *dp,
   if (sscanf(cp, "%d", &unit) != 1)
     return -1;
 
-  *cp = '\0';
-
-  snprintf(nbuf, sizeof(nbuf), "kern.cam.%s.%d.%s", pname, unit, vname);
+  snprintf(nbuf, sizeof(nbuf), "kern.cam.%.*s.%d.%s", (int) (cp-pname), pname, unit, vname);
   return sysctlbyname(nbuf, vp, vs, NULL, 0);
 }
 
@@ -415,6 +430,7 @@ test_init(TEST *tp,
 
   tp->flags  = 0;
   tp->passes = d_passes;
+  tp->t_max  = 0;
   
   tp->b_size = dp->stripe_size;
   
@@ -785,32 +801,33 @@ dev_close(DEVICE *dp) {
 
 void
 dev_print(FILE *fp,
+	  int idx,
 	  DEVICE *dp) {
   char sbuf[256];
   char bbuf[256];
   
 
-  fprintf(fp, "%s", dp->path);
-
+  if (idx)
+    fprintf(fp, "  %4d.\t", idx);
+  else
+    fprintf(fp, "\t");
+  
   if (dp->provider_name)
-    fprintf(fp, " (%s)", dp->provider_name);
+    fprintf(fp, "%s", dp->provider_name);
 
   switch (dp->type) {
   case TYPE_DISK:
-    fprintf(fp, " DISK");
+    fprintf(fp, " (DISK)");
     break;
   case TYPE_SSD:
-    fprintf(fp, " SSD");
+    fprintf(fp, " (SSD)");
     break;
   }
   
-  if (f_verbose && dp->physical_path)
-    fprintf(fp, " {%s}", dp->physical_path);
+  if (dp->ident && dp->ident[0])
+    fprintf(fp, " <%s>", dp->ident);
 
-  if (dp->ident)
-    fprintf(fp, " [%s]", dp->ident);
-  
-  fprintf(fp, ": %sB (%s sectors @ %ldn",
+  fprintf(fp, " : %sB (%s sectors @ %ldn",
 		 int2str(dp->media_size, sbuf, sizeof(sbuf), 0),
 		 int2str(dp->sectors, bbuf, sizeof(bbuf), 0),
 		 dp->stripe_size);
@@ -819,13 +836,28 @@ dev_print(FILE *fp,
     fprintf(fp, "/%lde", dp->sector_size);
   
   putc(')', fp);
+  putc('\n', fp);
+
+  if (f_verbose) {
+    putc('\t', fp);
+    
+    if (dp->cam.path)
+      fprintf(fp, "%s ", dp->cam.path);
   
-  if (f_verbose && dp->fw_heads && dp->tracks && dp->fw_sectors)
-    fprintf(fp, " {%u heads, %u tracks/head, %u sectors/track}",
-	    dp->fw_heads,
-	    dp->tracks,
-	    dp->fw_sectors);
+    if (dp->physical_path)
+      fprintf(fp, "{%s} ", dp->physical_path);
+
+    if (f_verbose > 1)
+      if (dp->fw_heads && dp->tracks && dp->fw_sectors)
+	fprintf(fp, "{%u heads, %u tracks/head, %u sectors/track} ",
+		dp->fw_heads,
+		dp->tracks,
+		dp->fw_sectors);
+    
+    putc('\n', fp);
+  }
 }
+
 
 
 
@@ -837,6 +869,7 @@ dev_open(const char *path) {
   DEVICE *dp;
   int is_rotating = -1;
   size_t isrs = sizeof(is_rotating);
+  struct cam_device *cam;
   
   
   dp = malloc(sizeof(*dp));
@@ -931,7 +964,18 @@ dev_open(const char *path) {
     dp->type = TYPE_DISK;
     break;
   }
-  
+
+  cam = cam_open_device(dp->path, O_RDWR);
+  if (cam) {
+    char buf[256];
+    
+    snprintf(buf, sizeof(buf), "%s%u bus %u scbus %u target %u lun %lu",
+	     cam->sim_name, cam->sim_unit_number, cam->bus_id,
+	     cam->path_id, cam->target_id, cam->target_lun);
+    dp->cam.path = strdup(buf);
+    cam_close_device(cam);
+  }
+
   return dp;
 
  Fail:
@@ -942,6 +986,68 @@ dev_open(const char *path) {
 }
 
 
+
+
+
+int
+disks_add(const char *name) {
+  DEVICE *dev;
+  DISK *dip;
+
+  
+  dev = dev_open(name);
+  if (!dev)
+    return -1;
+  
+  dip = malloc(sizeof(*dip));
+  if (!dip)
+    return -1;
+
+  dip->name = strdup(name);
+  dip->dev = dev;
+  
+  dip->next = disks;
+  disks = dip;
+
+  return 0;
+}
+
+
+int
+disks_load(void) {
+  size_t bsize;
+  char *buf;
+  char *cp;
+  
+  
+  if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0)
+    return -1;
+
+  buf = malloc(bsize);
+  if (!buf)
+    return -1;
+  
+  if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0)
+    return -1;
+
+  while ((cp = strsep(&buf, " ")) != NULL) {
+    disks_add(cp);
+  }
+  
+  return 0;
+}
+
+
+void
+disks_print(void) {
+  DISK *dip = disks;
+  int i = 0;
+  
+  while (dip) {
+    dev_print(stdout, ++i, dip->dev);
+    dip = dip->next;
+  }
+}
 
 
 
@@ -1528,26 +1634,6 @@ main(int argc,
 	}
 	goto NextArg;
 	
-      case 'D':
-	if (argv[i][j+1])
-	  arg = argv[i]+j+1;
-	else if (argv[i+1])
-	  arg = argv[++i];
-	else {
-	  fprintf(stderr, "%s: Error: -D: Missing device\n", argv0);
-	  exit(1);
-	}
-	
-	dev = dev_open(arg);
-	if (!dev) {
-	  fprintf(stderr, "%s: Error: %s: Unable to open device: %s\n",
-		  argv0, arg, strerror(errno));
-	  exit(1);
-	}
-	dev_print(stdout, dev);
-	putchar('\n');
-	goto NextArg;
-
       default:
 	fprintf(stderr, "%s: Error: -%c: Invalid switch at %d:%d\n", argv0, argv[i][j], i, j);
 	exit(1);
@@ -1557,6 +1643,27 @@ main(int argc,
   NextArg:;
   }
 
+  if (i >= argc) {
+    disks_load();
+    
+    puts("AVAILABLE DISK SELECTIONS:");
+    disks_print();
+    exit(0);
+  }
+  
+  if (disks_add(argv[i]) < 0) {
+    fprintf(stderr, "%s: Error: %s: Unable to open device: %s\n",
+	    argv0, argv[i], strerror(errno));
+    exit(1);
+  }
+  
+  ++i;
+
+  dev = disks->dev;
+  puts("SELECTED DISK:");
+  dev_print(stdout, 0, dev);
+  putchar('\n');
+  
   if (dev) {
     test_init(&tst, dev);
 
@@ -1623,7 +1730,7 @@ main(int argc,
       }
     }
 	
-    if (f_verbose) {
+    if (f_verbose > 1) {
       printf("Blocks:\n");
       printf("  Size:   %lu\n", tst.b_size);
       printf("  Start:  %ld\n", tst.start/tst.b_size);
@@ -1633,7 +1740,7 @@ main(int argc,
       printf("  Front Stuff:   %ld\n", tst.dev->front_reserved);
     }
   }
-  
+
   for (; i < argc; i++) {
     unsigned int pass;
     char tbuf[256], bbuf[256], sbuf[256];

@@ -3,11 +3,12 @@
 PGM=drvtool
 OBJS=drvtool.o
 CFLAGS=-Wall -g -O
+LIBS=-lcam -lmd
 
 all: $(PGM)
 
 $(PGM): $(OBJS)
-	$(CC) -o $(PGM) $(OBJS) -lmd
+	$(CC) -o $(PGM) $(OBJS) $(LIBS)
 
 clean distclean:
 	-rm -f $(PGM) *.o *~ \#* core *.core
