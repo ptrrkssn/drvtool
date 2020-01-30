@@ -504,17 +504,28 @@ str2off(const char *str,
     base = 1024;
   
   c = i = 0;
-  rc = sscanf(str, "%ld%c%c", vp, &c, &i);
-  if (rc < 1)
-    return rc;
 
-  if (rest) {
-    *rest = str;
-    if (**rest == '-')
-      ++*rest;
-    
-    while (**rest && isdigit(**rest))
-      ++*rest;
+  if (str[0] == '0' && str[1] == 'x') {
+    rc = sscanf(str+2, "%lx%c%c", vp, &c, &i);
+    if (rc < 1)
+      return rc;
+    if (rest) {
+      *rest = str+2;
+      while (**rest && isxdigit(**rest))
+	++*rest;
+    }
+  } else {
+    rc = sscanf(str, "%ld%c%c", vp, &c, &i);
+    if (rc < 1)
+      return rc;
+    if (rest) {
+      *rest = str;
+      if (**rest == '-')
+	++*rest;
+      
+      while (**rest && isdigit(**rest))
+	++*rest;
+    }
   }
   
   if (i == 'i')
