@@ -48,6 +48,7 @@
 #include <sha512.h>
 #include <sys/sysctl.h>
 #include <camlib.h>
+#include <zlib.h>
 #if 0
 #include <geom/geom_disk.h>
 #endif
@@ -56,7 +57,7 @@
 
 
 char *argv0 = "drvtool";
-char *version = "1.0";
+char *version = "1.1";
 
 long f_update_freq = 500;
 
@@ -67,13 +68,9 @@ int f_delete = 0;
 int f_update = 0;
 int f_verbose = 0;
 int f_random = 0;
-
 int f_print = 0;
 
-
 int d_passes = 1;
-
-
 BLOCKS *d_blocks = NULL;
 
 
@@ -112,6 +109,44 @@ buf_xor(unsigned char *buf,
 	int b) {
   while (bufsize-- > 0)
     *buf++ ^= b;
+}
+
+void
+buf_ror(unsigned char *buf,
+	size_t bufsize,
+	int b) {
+  unsigned char i, m, t;
+
+  m = 0;
+  for (i = 0; i < b; i++) {
+    m <<= 1;
+    m |= 0x01;
+  }
+  
+  while (bufsize-- > 0) {
+    t = (*buf & m) << (8-b);
+    *buf >>= b;
+    *buf++ |= t;
+  }
+}
+
+void
+buf_rol(unsigned char *buf,
+	size_t bufsize,
+	int b) {
+  unsigned char i, m, t;
+
+  m = 0;
+  for (i = 0; i < b; i++) {
+    m >>= 1;
+    m |= 0x80;
+  }
+  
+  while (bufsize-- > 0) {
+    t = (*buf & m) >> (8-b);
+    *buf <<= b;
+    *buf++ |= t;
+  }
 }
 
 
@@ -388,20 +423,23 @@ test_set_bsize(TEST *tp,
   o_start = tp->b_start * tp->b_size;
   o_length = tp->b_length * tp->b_size;
   
-  /* Make sure block size is >= sector size */
-  if (bsize < dev->sector_size)
-    return -1;
-
-  /* Make sure block size is a multiple of the sector size */
-  ns = bsize / dev->sector_size;
-  if (ns * dev->sector_size != bsize)
-    return -1;
-
-  /* Make sure block size and total media size is compatible */
   tb = dev->media_size / bsize;
-  if (tb * bsize != dev->media_size)
-    return -1;
-
+  
+  if (!dev->flags.is_file) {
+    /* Make sure block size is >= sector size */
+    if (bsize < dev->sector_size)
+      return -1;
+    
+    /* Make sure block size is a multiple of the sector size */
+    ns = bsize / dev->sector_size;
+    if (ns * dev->sector_size != bsize)
+      return -1;
+    
+    /* Make sure block size and total media size is compatible */
+    if (tb * bsize != dev->media_size)
+      return -1;
+  }
+  
   tp->b_size  = bsize;
   tp->b_total = tb;
   
@@ -463,8 +501,8 @@ test_init(TEST *tp,
   tp->passes = d_passes;
   tp->t_max  = 0;
 
-  tp->digest  = 0;
-  tp->crypto  = 0;
+  tp->digest    = 0;
+  tp->transform = 0;
   
   tp->b_size  = dp->stripe_size;
   tp->b_total = dp->media_size / tp->b_size;
@@ -531,7 +569,7 @@ str2off(const char *str,
     }
   }
   
-  if (i == 'i')
+  if (c && i == 'i')
     base = 1024;
   
   switch (toupper(c)) {
@@ -541,26 +579,18 @@ str2off(const char *str,
     
   case 'M':
     *vp *= base*base;
-    if (rest)
-      ++*rest;
     break;
     
   case 'G':
     *vp *= base*base*base;
-    if (rest)
-      ++*rest;
     break;
     
   case 'T':
     *vp *= base*base*base*base;
-    if (rest)
-      ++*rest;
     break;
     
   case 'P':
     *vp *= base*base*base*base;
-    if (rest)
-      ++*rest;
     break;
 
   default:
@@ -623,7 +653,6 @@ str2bytes(const char *str,
     *vp = (tp->b_total * tp->b_size * 100) / *vp;
     break;
     
-    
   case 'B':
     *vp *= tp->b_size;
     break;
@@ -639,11 +668,13 @@ str2bytes(const char *str,
   default:
     return -1;
   }
-  
-  /* Make sure it's a multiple of the sector size */
-  v = *vp / dp->sector_size;
-  if (v * dp->sector_size != *vp)
-    return -1;
+
+  if (!dp->flags.is_file) {
+    /* Make sure it's a multiple of the sector size */
+    v = *vp / dp->sector_size;
+    if (v * dp->sector_size != *vp)
+      return -1;
+  }
 
   return 1;
 }
@@ -923,6 +954,9 @@ dev_print(FILE *fp,
 	  int2str(dp->sectors, b3, sizeof(b3), 0),
 	  b1);
   
+  if (dp->flags.is_file)
+    fprintf(fp, " FILE");
+  
   if (dp->flags.is_ssd)
     fprintf(fp, " SSD");
 #if 0
@@ -978,11 +1012,13 @@ dev_open(const char *name) {
     goto Fail;
   
   dp->fd = -1;
-  if (*name == '/') {
+  if (*name == '/' || *name == '.') {
     dp->path = strdup(name);
-    
-    dp->name = strrchr(name, '/');
-    dp->name++;
+
+    if (*name == '/') {
+      dp->name = strrchr(name, '/');
+      dp->name++;
+    }
   }
   else
     dp->path = strxdup("/dev/", name, NULL);
@@ -1005,6 +1041,8 @@ dev_open(const char *name) {
   if (fstat(dp->fd, &dp->sbuf) < 0)
     goto Fail;
 
+  dp->flags.is_file = S_ISREG(dp->sbuf.st_mode) ? 1 : 0;
+  
   dp->media_size = 0;
   (void) ioctl(dp->fd, DIOCGMEDIASIZE, &dp->media_size);
   if (dp->media_size == 0)
@@ -1260,7 +1298,6 @@ test_seq(TEST *tp) {
   tp->t0 = now;
   tp->t1 = now;
   
- 
   bytes_done = 0;
 
   for (b = 0; b < tp->b_length && (!tp->t_max || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->t_max); ++b) {
@@ -1272,8 +1309,9 @@ test_seq(TEST *tp) {
     else
       b_pos = b;
 
+    b_pos += tp->b_start;
     pos = b_pos * tp->b_size;
-    
+
     if (tp->flags & TEST_READ) {
       /* Read original data */
       
@@ -1320,9 +1358,15 @@ test_seq(TEST *tp) {
 	}
       }
 
-      switch (tp->crypto) {
-      case TEST_CRYPTO_XOR:
-	buf_xor(tp->wbuf, tp->b_size, 0xFF);
+      switch (tp->transform) {
+      case TEST_TRANSFORM_XOR:
+	buf_xor(tp->wbuf, tp->b_size, tp->txd.xor);
+	break;
+      case TEST_TRANSFORM_ROR:
+	buf_ror(tp->wbuf, tp->b_size, tp->txd.ror);
+	break;
+      case TEST_TRANSFORM_ROL:
+	buf_rol(tp->wbuf, tp->b_size, tp->txd.rol);
 	break;
       }
       
@@ -1488,16 +1532,24 @@ test_seq(TEST *tp) {
 	tbuf = tp->rbuf;
       
       switch (tp->digest) {
+      case TEST_DIGEST_ADLER32:
+	tp->ctx.adler32 = adler32_z(tp->ctx.adler32, tbuf, tp->b_size);
+	break;
+	
+      case TEST_DIGEST_CRC32:
+	tp->ctx.adler32 = crc32_z(tp->ctx.adler32, tbuf, tp->b_size);
+	break;
+	
       case TEST_DIGEST_SHA256:
-	SHA256_Update(&tp->ctx.sha256, tbuf, rc);
+	SHA256_Update(&tp->ctx.sha256, tbuf, tp->b_size);
 	break;
 	
       case TEST_DIGEST_SHA384:
-	SHA384_Update(&tp->ctx.sha384, tbuf, rc);
+	SHA384_Update(&tp->ctx.sha384, tbuf, tp->b_size);
 	break;
 	
       case TEST_DIGEST_SHA512:
-	SHA512_Update(&tp->ctx.sha512, tbuf, rc);
+	SHA512_Update(&tp->ctx.sha512, tbuf, tp->b_size);
 	break;
       }
     }
@@ -1520,6 +1572,9 @@ test_seq(TEST *tp) {
       test_pstatus(stderr, tp, &now, b);
       fputc('\r', stderr);
     }
+    
+    tp->last_b_pos = b_pos;
+    tp->last_pos   = pos;
   }
   
   test_pstatus(stderr, tp, &now, b);
@@ -1568,8 +1623,12 @@ buf_print(FILE *fp,
     }
     
     for (j = 0; j < 16 && i+j < size; j++) {
-      if (j)
-	putc(' ', fp);
+      if (mode) {
+	if (j % 8 == 0)
+	  putc(' ', fp);
+	if (j)
+	  putc(' ', fp);
+      }
       fprintf(fp, "%02X", buf[i+j]);
     }
 
@@ -1578,8 +1637,11 @@ buf_print(FILE *fp,
       putc(':', fp);
       putc(' ', fp);
       for (j = 0; j < 16 && i+j < size; j++) {
-	putc(isprint(buf[i+j]) ? buf[i+j] : '?', fp);
-	putc(' ', fp);
+	if (j % 8 == 0)
+	  putc(' ', fp);
+	if (j)
+	  putc(' ', fp);
+      	putc(isprint(buf[i+j]) ? buf[i+j] : '?', fp);
       }
     }
 
@@ -1605,8 +1667,8 @@ usage(FILE *fp) {
   fprintf(fp, "  -f               Flush device write buffer [NO]\n");
   fprintf(fp, "  -d               Enable sending TRIM commands to device [NO]\n");
   fprintf(fp, "  -p               Print last block [NO]\n");
-  fprintf(fp, "  -C <type>        Crypto type (XOR) [NONE]\n");
-  fprintf(fp, "  -D <type>        Digest (checksum) type (SHA256 - SHA384 - SHA512) [NONE]\n");
+  fprintf(fp, "  -X <type>        Transform type (XOR, ROL, ROR) [NONE]\n");
+  fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32, ADLER32, SHA256, SHA384, SHA512) [NONE]\n");
   fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
   fprintf(fp, "  -P <num>         Number of passes [%d]\n", d_passes);
   fprintf(fp, "  -S <pos>         Starting block offset [FIRST]\n");
@@ -1671,6 +1733,12 @@ prompt_yes(const char *msg,
 
 int
 str2digest(const char *s) {
+  if (strcasecmp(s, "ADLER32") == 0 || strcasecmp(s, "ADLER-32") == 0)
+    return TEST_DIGEST_ADLER32;
+
+  if (strcasecmp(s, "CRC32") == 0 || strcasecmp(s, "CRC-32") == 0)
+    return TEST_DIGEST_CRC32;
+
   if (strcasecmp(s, "256") == 0 || strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
     return TEST_DIGEST_SHA256;
 
@@ -1685,9 +1753,48 @@ str2digest(const char *s) {
 
 
 int
-str2crypto(const char *s) {
-  if (strcasecmp(s, "XOR") == 0)
-    return TEST_CRYPTO_XOR;
+str2transform(const char *s,
+	      union transform_txd *d) {
+  int v;
+  
+  if (strncasecmp(s, "XOR", 3) == 0) {
+    s += 3;
+    if (*s == '-')
+      ++s;
+
+    v = 0xFF;
+    if (*s && str2int(s, &v) < 0)
+      return -1;
+    
+    d->xor = v;
+    return TEST_TRANSFORM_XOR;
+  }
+
+  if (strncasecmp(s, "ROR", 3) == 0) {
+    s += 3;
+    if (*s == '-')
+      ++s;
+
+    v = 1;
+    if (*s && str2int(s, &v) < 0)
+      return -1;
+    
+    d->xor = v;
+    return TEST_TRANSFORM_ROR;
+  }
+
+  if (strncasecmp(s, "ROL", 3) == 0) {
+    s += 3;
+    if (*s == '-')
+      ++s;
+
+    v = 1;
+    if (*s &&str2int(s, &v) < 0)
+      return -1;
+    
+    d->xor = v;
+    return TEST_TRANSFORM_ROL;
+  }
 
   return -1;
 }
@@ -1700,12 +1807,13 @@ main(int argc,
   DEVICE *dev = NULL;
   TEST tst;
   int i, j, rc;
-  char *arg;
+  char *arg, *ds;
   unsigned char o_digest[64], digest[64];
+  unsigned long o_adler32;
   int (*tstfun)(TEST *tp);
 
   char *s_digest = NULL;
-  char *s_crypto = NULL;
+  char *s_transform = NULL;
   char *s_time = NULL;
   char *s_passes = NULL;
   char *s_start = NULL;
@@ -1770,13 +1878,13 @@ main(int argc,
 	}
 	goto NextArg;
 	
-      case 'C':
+      case 'X':
 	if (argv[i][j+1])
-	  s_crypto = argv[i]+j+1;
+	  s_transform = argv[i]+j+1;
 	else if (argv[i+1])
-	  s_crypto = argv[++i];
+	  s_transform = argv[++i];
 	else {
-	  fprintf(stderr, "%s: Error: -C: Missing crypto type\n", argv0);
+	  fprintf(stderr, "%s: Error: -X: Missing transform type\n", argv0);
 	  exit(1);
 	}
 	goto NextArg;
@@ -1954,11 +2062,11 @@ main(int argc,
     }
   }
   
-  if (s_crypto) {
-    tst.crypto = str2crypto(s_crypto);
-    if (tst.crypto < 0) {
-      fprintf(stderr, "%s: Error: %s: Invalid crypto type\n",
-	      argv0, s_crypto);
+  if (s_transform) {
+    tst.transform = str2transform(s_transform, &tst.txd);
+    if (tst.transform < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid transform type\n",
+	      argv0, s_transform);
       exit(1);
     }
   }
@@ -2001,6 +2109,7 @@ main(int argc,
       
       tstname = "Read";
       tst.rbuf = tst.obuf;
+      tst.wbuf = tst.obuf;
       tst.flags = TEST_READ;
       tstfun = test_seq;
       
@@ -2121,6 +2230,14 @@ main(int argc,
 	printf("  Pass %u:\n", pass);
       
       switch (tst.digest) {
+      case TEST_DIGEST_ADLER32:
+	tst.ctx.adler32 = adler32_z(0L, NULL, 0);
+	break;
+	
+      case TEST_DIGEST_CRC32:
+	tst.ctx.adler32 = crc32_z(0L, NULL, 0);
+	break;
+	
       case TEST_DIGEST_SHA256:
 	SHA256_Init(&tst.ctx.sha256);
 	break;
@@ -2137,11 +2254,35 @@ main(int argc,
       rc = (*tstfun)(&tst);
   
       switch (tst.digest) {
+      case TEST_DIGEST_ADLER32:
+      case TEST_DIGEST_CRC32:
+	ds = (tst.digest == TEST_DIGEST_ADLER32) ? "ADLER-32" : "CRC-32";
+	      
+	if (pass == tst.passes)
+	  printf("\n%s Digest:\n  %08lX\n",
+		 ds,
+		 tst.ctx.adler32);
+	
+	if(pass == 1)
+	  o_adler32 = tst.ctx.adler32;
+	else {
+	  if (o_adler32 != tst.ctx.adler32) {
+	    fprintf(stderr, "%s: Error: %s Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
+		    argv0,
+		    ds,
+		    o_adler32,
+		    pass,
+		    tst.ctx.adler32);
+	    exit(1);
+	  }
+	}
+	break;
+	
       case TEST_DIGEST_SHA256:
 	SHA256_Final(digest, &tst.ctx.sha256);
 
 	if (pass == tst.passes) {
-	  printf("SHA256 Digest:\n");
+	  printf("\nSHA256 Digest:\n");
 	  buf_print(stdout, digest, 32, 1);
 	}
 	
@@ -2153,13 +2294,14 @@ main(int argc,
 	    exit(1);
 	  }
 	}
+	
 	break;
 	
       case TEST_DIGEST_SHA384:
 	SHA384_Final(digest, &tst.ctx.sha384);
 
 	if (pass == tst.passes) {
-	  printf("SHA384 Digest:\n");
+	  printf("\nSHA384 Digest:\n");
 	  buf_print(stdout, digest, 48, 1);
 	}
 	
@@ -2177,7 +2319,7 @@ main(int argc,
 	SHA512_Final(digest, &tst.ctx.sha512);
 	
 	if (pass == tst.passes) {
-	  printf("SHA512 Digest:\n");
+	  printf("\nSHA512 Digest:\n");
 	  buf_print(stdout, digest, 64, 1);
 	}
 
@@ -2194,7 +2336,11 @@ main(int argc,
     }
     
     if (f_print) {
-      printf("Last Data Block (%lu bytes):\n", tst.b_size);
+      printf("\nLast Data Block - %lu bytes @ block %ld (offset %ld):\n",
+	     tst.b_size,
+	     tst.last_b_pos,
+	     tst.last_pos);
+      
       buf_print(stdout, tst.rbuf, tst.b_size, 3);
     }
   }

@@ -14,11 +14,16 @@ typedef struct {
 typedef unsigned char PATTERN[4];
 
 
-#define TEST_DIGEST_SHA256 1
-#define TEST_DIGEST_SHA384 2
-#define TEST_DIGEST_SHA512 3
+#define TEST_DIGEST_SHA256  1
+#define TEST_DIGEST_SHA384  2
+#define TEST_DIGEST_SHA512  3
 
-#define TEST_CRYPTO_XOR    1
+#define TEST_DIGEST_ADLER32 4
+#define TEST_DIGEST_CRC32   5
+
+#define TEST_TRANSFORM_XOR  1
+#define TEST_TRANSFORM_ROR  2
+#define TEST_TRANSFORM_ROL  3
 
 
 #define RATE_BUF_SIZE 10
@@ -38,6 +43,7 @@ typedef struct {
   struct stat sbuf;
 
   struct {
+    unsigned int is_file : 1;
     unsigned int is_ssd  : 1;
 #if 0
     unsigned int is_open : 1;
@@ -99,9 +105,6 @@ typedef struct {
   
   int passes;          /* Number of passes            */
   
-  struct timespec t0;  /* Start time                  */
-  struct timespec t1;  /* Last update                 */
-  
   time_t t_max;        /* Max length of test run      */
   
   off_t b_size;        /* Size of each block          */
@@ -111,20 +114,32 @@ typedef struct {
   off_t b_length;      /* Number of blocks            */
   off_t b_end;         /* Last+1 block #              */
   
+  int transform;
+  union transform_txd {
+    unsigned char xor;
+    unsigned char ror;
+    unsigned char rol;
+  } txd;
+    
+  int digest;
+  union digest_ctx {
+    SHA256_CTX sha256;
+    SHA384_CTX sha384;
+    SHA512_CTX sha512;
+    unsigned long adler32;
+  } ctx;
+
+  BLOCKS *blocks;
+  
+  struct timespec t0;  /* Start time                  */
+  struct timespec t1;  /* Last update                 */
+  
   unsigned char *obuf; /* Block buffer, original data */
   unsigned char *wbuf; /* Block buffer, data to write */
   unsigned char *rbuf; /* Block buffer, data read     */
 
-  int crypto;
-  
-  int digest;
-  union {
-    SHA256_CTX sha256;
-    SHA384_CTX sha384;
-    SHA512_CTX sha512;
-  } ctx;
-
-  BLOCKS *blocks;
+  off_t last_b_pos;
+  off_t last_pos;
 } TEST;
 
 
