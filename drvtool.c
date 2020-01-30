@@ -1584,6 +1584,7 @@ usage(FILE *fp) {
   fprintf(fp, "  -f               Flush device write buffer [NO]\n");
   fprintf(fp, "  -d               Enable sending TRIM commands to device [NO]\n");
   fprintf(fp, "  -p               Print last block [NO]\n");
+  fprintf(fp, "  -C <type>        Crypto type (XOR) [NONE]\n");
   fprintf(fp, "  -D <type>        Digest (checksum) type (SHA224 - SHA256 - SHA512) [NONE]\n");
   fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
   fprintf(fp, "  -P <num>         Number of passes [%d]\n", d_passes);
