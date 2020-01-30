@@ -14,8 +14,8 @@ typedef struct {
 typedef unsigned char PATTERN[4];
 
 
-#define TEST_DIGEST_SHA224 1
-#define TEST_DIGEST_SHA256 2
+#define TEST_DIGEST_SHA256 1
+#define TEST_DIGEST_SHA384 2
 #define TEST_DIGEST_SHA512 3
 
 #define TEST_CRYPTO_XOR    1
@@ -117,8 +117,8 @@ typedef struct {
   
   int digest;
   union {
-    SHA224_CTX sha224;
     SHA256_CTX sha256;
+    SHA384_CTX sha384;
     SHA512_CTX sha512;
   } ctx;
 

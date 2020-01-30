@@ -43,8 +43,8 @@
 #include <sys/disk.h>
 #include <sys/stat.h>
 #include <sys/errno.h>
-#include <sha224.h>
 #include <sha256.h>
+#include <sha384.h>
 #include <sha512.h>
 #include <sys/sysctl.h>
 #include <camlib.h>
@@ -901,12 +901,12 @@ dev_print(FILE *fp,
   else
     fprintf(fp, "\t");
   
-  fprintf(fp, "%s", dp->name);
+  fprintf(fp, "%-6s", dp->name);
 
   if (dp->ident && dp->ident[0])
-    fprintf(fp, " <%s>", dp->ident);
+    fprintf(fp, " : %-20s", dp->ident);
 
-  fprintf(fp, " : %sB (%s sectors @ %sn",
+  fprintf(fp, " : %6sB ( %5s sectors @ %sn",
 	  int2str(dp->media_size, sbuf, sizeof(sbuf), 0),
 	  int2str(dp->sectors, bbuf, sizeof(bbuf), 0),
 	  int2str(dp->stripe_size, xbuf, sizeof(xbuf), 2));
@@ -915,6 +915,7 @@ dev_print(FILE *fp,
     fprintf(fp, "/%se",
 	    int2str(dp->sector_size, xbuf, sizeof(xbuf), 2));
   
+  putc(' ', fp);
   putc(')', fp);
   
   putc(' ', fp);
@@ -1480,12 +1481,12 @@ test_seq(TEST *tp) {
 	tbuf = tp->rbuf;
       
       switch (tp->digest) {
-      case TEST_DIGEST_SHA224:
-	SHA224_Update(&tp->ctx.sha224, tbuf, rc);
-	break;
-	
       case TEST_DIGEST_SHA256:
 	SHA256_Update(&tp->ctx.sha256, tbuf, rc);
+	break;
+	
+      case TEST_DIGEST_SHA384:
+	SHA384_Update(&tp->ctx.sha384, tbuf, rc);
 	break;
 	
       case TEST_DIGEST_SHA512:
@@ -1596,7 +1597,7 @@ usage(FILE *fp) {
   fprintf(fp, "  -d               Enable sending TRIM commands to device [NO]\n");
   fprintf(fp, "  -p               Print last block [NO]\n");
   fprintf(fp, "  -C <type>        Crypto type (XOR) [NONE]\n");
-  fprintf(fp, "  -D <type>        Digest (checksum) type (SHA224 - SHA256 - SHA512) [NONE]\n");
+  fprintf(fp, "  -D <type>        Digest (checksum) type (SHA256 - SHA384 - SHA512) [NONE]\n");
   fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
   fprintf(fp, "  -P <num>         Number of passes [%d]\n", d_passes);
   fprintf(fp, "  -S <pos>         Starting block offset [FIRST]\n");
@@ -1661,11 +1662,11 @@ prompt_yes(const char *msg,
 
 int
 str2digest(const char *s) {
-  if (strcasecmp(s, "224") == 0 || strcasecmp(s, "SHA224") == 0 || strcasecmp(s, "SHA-224") == 0)
-    return TEST_DIGEST_SHA224;
-  
   if (strcasecmp(s, "256") == 0 || strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
     return TEST_DIGEST_SHA256;
+
+  if (strcasecmp(s, "384") == 0 || strcasecmp(s, "SHA384") == 0 || strcasecmp(s, "SHA-384") == 0)
+    return TEST_DIGEST_SHA384;
 
   if (strcasecmp(s, "512") == 0 || strcasecmp(s, "SHA512") == 0 || strcasecmp(s, "SHA-512") == 0)
     return TEST_DIGEST_SHA512;
@@ -2102,12 +2103,12 @@ main(int argc,
 	printf("  Pass %u:\n", pass);
       
       switch (tst.digest) {
-      case TEST_DIGEST_SHA224:
-	SHA224_Init(&tst.ctx.sha224);
-	break;
-	
       case TEST_DIGEST_SHA256:
 	SHA256_Init(&tst.ctx.sha256);
+	break;
+	
+      case TEST_DIGEST_SHA384:
+	SHA384_Init(&tst.ctx.sha384);
 	break;
 	
       case TEST_DIGEST_SHA512:
@@ -2118,24 +2119,6 @@ main(int argc,
       rc = (*tstfun)(&tst);
   
       switch (tst.digest) {
-      case TEST_DIGEST_SHA224:
-	SHA224_Final(digest, &tst.ctx.sha224);
-
-	if (pass == tst.passes) {
-	  printf("SHA224 Digest:\n");
-	  buf_print(stdout, digest, 32, 1);
-	}
-	
-	if (pass == 1)
-	  memcpy(o_digest, digest, 32);
-	else {
-	  if (memcmp(o_digest, digest, 32) != 0) {
-	    fprintf(stderr, "%s: Error: SHA224 Digest mismatch between passes\n", argv0);
-	    exit(1);
-	  }
-	}
-	break;
-	
       case TEST_DIGEST_SHA256:
 	SHA256_Final(digest, &tst.ctx.sha256);
 
@@ -2149,6 +2132,24 @@ main(int argc,
 	else {
 	  if (memcmp(o_digest, digest, 32) != 0) {
 	    fprintf(stderr, "%s: Error: SHA256 Digest mismatch between passes\n", argv0);
+	    exit(1);
+	  }
+	}
+	break;
+	
+      case TEST_DIGEST_SHA384:
+	SHA384_Final(digest, &tst.ctx.sha384);
+
+	if (pass == tst.passes) {
+	  printf("SHA384 Digest:\n");
+	  buf_print(stdout, digest, 48, 1);
+	}
+	
+	if (pass == 1)
+	  memcpy(o_digest, digest, 48);
+	else {
+	  if (memcmp(o_digest, digest, 48) != 0) {
+	    fprintf(stderr, "%s: Error: SHA384 Digest mismatch between passes\n", argv0);
 	    exit(1);
 	  }
 	}
