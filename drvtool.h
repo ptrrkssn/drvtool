@@ -39,7 +39,9 @@ typedef struct {
 
   struct {
     unsigned int is_ssd  : 1;
+#if 0
     unsigned int is_open : 1;
+#endif
   } flags;
   
   off_t media_size;

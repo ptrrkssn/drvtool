@@ -48,12 +48,15 @@
 #include <sha512.h>
 #include <sys/sysctl.h>
 #include <camlib.h>
+#if 0
 #include <geom/geom_disk.h>
+#endif
 
 #include "drvtool.h"
 
 
 char *argv0 = "drvtool";
+char *version = "1.0";
 
 long f_update_freq = 500;
 
@@ -893,7 +896,7 @@ void
 dev_print(FILE *fp,
 	  int idx,
 	  DEVICE *dp) {
-  char sbuf[256], bbuf[256], xbuf[256];
+  char b1[80], b2[80], b3[80];
   
 
   if (idx)
@@ -906,24 +909,26 @@ dev_print(FILE *fp,
   if (dp->ident && dp->ident[0])
     fprintf(fp, " : %-20s", dp->ident);
 
-  fprintf(fp, " : %6sB ( %5s sectors @ %sn",
-	  int2str(dp->media_size, sbuf, sizeof(sbuf), 0),
-	  int2str(dp->sectors, bbuf, sizeof(bbuf), 0),
-	  int2str(dp->stripe_size, xbuf, sizeof(xbuf), 2));
+  int2str(dp->stripe_size, b1, sizeof(b1), 2);
+  strcat(b1, "n");
+  if (dp->sector_size != dp->stripe_size) {
+    strcat(b1, "/");
+    int2str(dp->sector_size, b2, sizeof(b2), 2);
+    strcat(b1, b2);
+    strcat(b1, "e");
+  }
   
-  if (dp->sector_size != dp->stripe_size)
-    fprintf(fp, "/%se",
-	    int2str(dp->sector_size, xbuf, sizeof(xbuf), 2));
+  fprintf(fp, " : %6sB : %6s sectors @ %-12s :",
+	  int2str(dp->media_size, b2, sizeof(b2), 0),
+	  int2str(dp->sectors, b3, sizeof(b3), 0),
+	  b1);
   
-  putc(' ', fp);
-  putc(')', fp);
-  
-  putc(' ', fp);
-  putc(':', fp);
   if (dp->flags.is_ssd)
     fprintf(fp, " SSD");
+#if 0
   if (dp->flags.is_open)
-    fprintf(fp, " OPEN");
+    fprintf(fp, " IN-USE");
+#endif
   
   putc('\n', fp);
 
@@ -954,14 +959,15 @@ DEVICE *
 dev_open(const char *name) {
   char pnbuf[MAXPATHLEN];
   char idbuf[DISK_IDENT_SIZE];
-  char gbuf[256];
   int s_errno;
   DEVICE *dp;
   int is_rotating = -1;
   size_t isrs = sizeof(is_rotating);
   struct cam_device *cam;
+#if 0
   u_int geom_flags;
-  
+  char gbuf[256];
+#endif
   
   dp = malloc(sizeof(*dp));
   if (!dp)
@@ -984,12 +990,13 @@ dev_open(const char *name) {
   dev_cam_sysctl(dp, "rotating", &is_rotating, &isrs);
   dp->flags.is_ssd = (is_rotating ? 0 : 1);
 
+#if 0
   geom_flags = 0;
   isrs = sizeof(gbuf);
   dev_geom_sysctl(dp, "flags", gbuf, &isrs);
   if (sscanf(gbuf, "%02x", &geom_flags) == 1) 
     dp->flags.is_open = (geom_flags & 0x0002) ? 1 : 0;
-
+#endif
   
   dp->fd = open(dp->path, (f_update ? O_RDWR : O_RDONLY), 0);
   if (dp->fd < 0)
@@ -1585,10 +1592,12 @@ buf_print(FILE *fp,
 
 void
 usage(FILE *fp) {
+  fprintf(fp, "[drvtool, version %s, by Peter Eriksson <pen@lysator.liu.se>]\n\n", version);
   fprintf(fp, "Usage:\n  %s [<options>] [<device> [<actions>]]\n",
 	  argv0);
   fprintf(fp, "\nOptions:\n");
   fprintf(fp, "  -h               Display this information\n");
+  fprintf(fp, "  -V               Print program verson and exit\n");
   fprintf(fp, "  -v               Increase verbosity [NO]\n");
   fprintf(fp, "  -w               Open device in R/W mode (needed for write tests) [RO]\n");
   fprintf(fp, "  -y               Answer yes to all questions [NO]\n");
@@ -1726,6 +1735,10 @@ main(int argc,
 	++f_verbose;
 	break;
 
+      case 'V':
+	printf("[drvtool, version %s, by Peter Eriksson <pen@lysator.liu.se>]\n", version);
+	exit(0);
+
       case 'r':
 	++f_random;
 	break;
@@ -1832,6 +1845,9 @@ main(int argc,
   NextArg:;
   }
 
+
+  printf("[drvtool, version %s, by Peter Eriksson <pen@lysator.liu.se>]\n\n", version);
+    
   if (i >= argc) {
     disks_load();
     
@@ -1860,7 +1876,8 @@ main(int argc,
       exit(0);
     }
   }
-  
+
+#if 0
   if (dev->flags.is_open && f_update && !f_yes) {
     rc = prompt_yes("*** DEVICE IS IN USE ***\nProceed anyway?");
     if (rc != 1) {
@@ -1868,6 +1885,7 @@ main(int argc,
       exit(0);
     }
   }
+#endif
   
   test_init(&tst, dev);
   
