@@ -1,7 +1,5 @@
 /*
-** drvtool.c 
-**
-** Utility to analyze/test/purge hard drives
+** drvtool.c - A tool to analyze/test/purge hard drives
 **
 ** Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
 ** All rights reserved.
@@ -50,6 +48,9 @@
 #include <sha512.h>
 #include <sys/sysctl.h>
 #include <camlib.h>
+#include <geom/geom_disk.h>
+
+#include "drvtool.h"
 
 
 char *argv0 = "drvtool";
@@ -62,16 +63,20 @@ int f_flush = 0;
 int f_delete = 0;
 int f_update = 0;
 int f_verbose = 0;
+int f_random = 0;
 
 int f_print = 0;
+
 
 int d_passes = 1;
 
 
-typedef unsigned char PATTERN[4];
+BLOCKS *d_blocks = NULL;
+
 
 PATTERN sel_pattern =
   { 0x00, 0x00, 0x00, 0x00 };
+
 
 #define NUM_TEST_PATTERNS 6
 
@@ -85,7 +90,9 @@ PATTERN test_patterns[NUM_TEST_PATTERNS] =
    { 0x55, 0x55, 0x55, 0x55 }  /* 0101 0101  0101 0101  ... */
   };
 
+
 #define NUM_PURGE_PATTERNS 2
+
 PATTERN purge_patterns[NUM_PURGE_PATTERNS] =
   {
    { 0xaa, 0xaa, 0xaa, 0xaa }, /* 10101010... */
@@ -93,115 +100,16 @@ PATTERN purge_patterns[NUM_PURGE_PATTERNS] =
   };
 
 
-
-#define CHECK_SHA224 1
-#define CHECK_SHA256 2
-#define CHECK_SHA512 3
-
-
-#define RATE_BUF_SIZE 10
-
-typedef struct {
-  unsigned int f;
-  unsigned int p;
-  off_t dv[RATE_BUF_SIZE];
-} RATE;
-
-
-
-#define TYPE_UNKNOWN 0
-#define TYPE_DISK    1
-#define TYPE_SSD     2
-
-
-typedef struct {
-  int fd;
-  char *path;
-  struct stat sbuf;
-
-  int type;
-  
-  off_t media_size;
-  off_t sector_size;
-  off_t sectors;
-
-  off_t stripe_size;
-  off_t stripe_offset;
-  off_t stripes;
-  
-  unsigned int fw_sectors;
-  unsigned int fw_heads;
-  unsigned int tracks;
-  
-  off_t front_reserved;
-  
-  char *provider_name;
-  char *ident;
-  char *physical_path;
-  
-  struct {
-    char *path;
-  } cam;
-  
-} DEVICE;
-
-
-
-typedef struct disk {
-  struct disk *next;
-  char *name;
-  DEVICE *dev;
-} DISK;
-
 DISK *disks = NULL;
 
 
-
-#define TEST_READ     0x0001
-#define TEST_WRITE    0x0002
-#define TEST_VERIFY   0x0004
-#define TEST_RESTORE  0x0008
-#define TEST_PATTERN  0x0010
-#define TEST_PURGE    0x0020
-#define TEST_FLUSH    0x0040
-#define TEST_DELETE   0x0080
-
-
-typedef struct {
-  DEVICE *dev;
-  
-  RATE rate;           /* Transfer rate buffer        */
-
-  unsigned int flags;  /* Test flags                  */
-  
-  int passes;          /* Number of passes            */
-  
-  struct timespec t0;  /* Start time                  */
-  struct timespec t1;  /* Last update                 */
-  
-  time_t t_max;        /* Max length of test run      */
-  
-  off_t b_size;       /* Size of each block          */
-  off_t b_last;       /* Size of last read block     */
-  
-  off_t  start;        /* First postion               */
-  off_t  length;       /* Data length                 */
-  off_t  end;          /* End of data                 */
-  
-  off_t  pos;          /* Current block position      */
-  
-  unsigned char *obuf; /* Block buffer, original data */
-  unsigned char *wbuf; /* Block buffer, data to write */
-  unsigned char *rbuf; /* Block buffer, data read     */
-
-  int checksum;
-  union {
-    SHA224_CTX sha224;
-    SHA256_CTX sha256;
-    SHA512_CTX sha512;
-  } ctx;
-} TEST;
-
+void
+buf_xor(unsigned char *buf,
+	size_t bufsize,
+	int b) {
+  while (bufsize-- > 0)
+    *buf++ ^= b;
+}
 
 
 char *
@@ -257,19 +165,78 @@ pattern_fill(unsigned char *buf,
 }
 
 
+
+BLOCKS *
+blocks_create(off_t s) {
+  off_t i;
+  BLOCKS *bp;
+  
+
+  bp = malloc(sizeof(*bp));
+  if (!bp)
+    return NULL;
+
+  bp->s = 0;
+  bp->v = calloc(s, sizeof(bp->v[0]));
+  if (bp->v == NULL)
+    return NULL;
+
+  bp->s = s;
+
+  for (i = 0; i < s; i++)
+    bp->v[i] = i;
+
+  return bp;
+}
+
+
+static inline void
+off_swap(off_t *a,
+	 off_t *b) {
+  off_t t = *a;
+  
+  *a = *b;
+  *b = t;
+}
+
+off_t
+orand(off_t size) {
+  off_t r;
+
+  r = (((off_t) lrand48() << 31) | ((off_t) lrand48() << 31)) | lrand48();
+  return r % size;
+}
+
+
+/* 
+ * Shuffle blocks using Fisher-Yates shuffe algorithm.
+ * Ensures each block is visited atleast once.
+ */
+void
+blocks_shuffle(BLOCKS *bp) {
+  off_t i;
+
+  for (i = bp->s-1; i > 0; i--) {
+    off_t j = orand(i+1);
+    
+    off_swap(&bp->v[i], &bp->v[j]);
+  }
+}
+
+
 int
-dev_sysctl(DEVICE *dp,
-	   const char *vname,
-	   void *vp,
-	   size_t *vs) {
+dev_cam_sysctl(DEVICE *dp,
+	       const char *vname,
+	       void *vp,
+	       size_t *vs) {
   char nbuf[128], *pname, *cp;
   int unit;
 
   
-  if (!dp || !dp->provider_name)
+  if (!dp || !dp->name)
     return -1;
   
-  pname = dp->provider_name;
+  pname = dp->name;
   cp = pname+strlen(pname)-1;
   while (cp >= pname && isdigit(*cp))
     --cp;
@@ -279,6 +246,31 @@ dev_sysctl(DEVICE *dp,
     return -1;
 
   snprintf(nbuf, sizeof(nbuf), "kern.cam.%.*s.%d.%s", (int) (cp-pname), pname, unit, vname);
+  return sysctlbyname(nbuf, vp, vs, NULL, 0);
+}
+
+int
+dev_geom_sysctl(DEVICE *dp,
+		const char *vname,
+		void *vp,
+		size_t *vs) {
+  char nbuf[128], *pname, *cp;
+  int unit;
+
+  
+  if (!dp || !dp->name)
+    return -1;
+  
+  pname = dp->name;
+  cp = pname+strlen(pname)-1;
+  while (cp >= pname && isdigit(*cp))
+    --cp;
+  ++cp;
+  
+  if (sscanf(cp, "%d", &unit) != 1)
+    return -1;
+
+  snprintf(nbuf, sizeof(nbuf), "kern.geom.disk.%s.%s", pname, vname);
   return sysctlbyname(nbuf, vp, vs, NULL, 0);
 }
 
@@ -379,21 +371,60 @@ rate_update(RATE *rp,
 
 
 int
+test_set_bsize(TEST *tp,
+	       off_t bsize) {
+  DEVICE *dev;
+  off_t ns, tb, o_start, o_length;
+
+  
+  if (!tp || !tp->dev)
+    return -1;
+
+  dev = tp->dev;
+
+  o_start = tp->b_start * tp->b_size;
+  o_length = tp->b_length * tp->b_size;
+  
+  /* Make sure block size is >= sector size */
+  if (bsize < dev->sector_size)
+    return -1;
+
+  /* Make sure block size is a multiple of the sector size */
+  ns = bsize / dev->sector_size;
+  if (ns * dev->sector_size != bsize)
+    return -1;
+
+  /* Make sure block size and total media size is compatible */
+  tb = dev->media_size / bsize;
+  if (tb * bsize != dev->media_size)
+    return -1;
+
+  tp->b_size  = bsize;
+  tp->b_total = tb;
+  
+  tp->b_start  = o_start / bsize;
+  tp->b_length = o_length ? o_length / bsize : tb;
+  tp->b_end    = tp->b_start + tp->b_length;
+  
+  return 0;
+  
+}
+
+int
 test_set_start(TEST *tp,
 	       off_t start) {
   if (!tp || !tp->dev)
     return -1;
 
-  if (start < 0 || start > tp->dev->media_size)
+  if (start < 0 || start >= tp->b_total)
     return -1;
   
-  tp->start = start;
-  tp->pos   = tp->start;
-
-  if (tp->length + tp->start > tp->dev->media_size)
-    tp->length = tp->dev->media_size - tp->start;
+  tp->b_start = start;
   
-  tp->end = tp->start + tp->length;
+  if (tp->b_length + tp->b_start > tp->b_total)
+    tp->b_length = tp->b_total - tp->b_start;
+  
+  tp->b_end = tp->b_start + tp->b_length;
 
   return 0;
   
@@ -407,17 +438,14 @@ test_set_length(TEST *tp,
 
   /* Negative length -> Count from end of disk */
   if (length < 0)
-    length += tp->dev->media_size;
+    length += tp->b_total;
   
-  if (length < 0 || length+tp->start > tp->dev->media_size)
+  if (length < 0 || length+tp->b_start > tp->b_total)
     return -1;
   
-  tp->length = length;
-  tp->end    = tp->start + tp->length;
+  tp->b_length = length;
+  tp->b_end    = tp->b_start + tp->b_length;
 
-  if (tp->pos > tp->end)
-    tp->pos = tp->end;
-  
   return 0;
 }
 
@@ -431,14 +459,17 @@ test_init(TEST *tp,
   tp->flags  = 0;
   tp->passes = d_passes;
   tp->t_max  = 0;
-  
-  tp->b_size = dp->stripe_size;
-  
-  tp->start = 0;
-  tp->pos   = 0;
 
-  tp->length = dp->media_size - tp->start;
-  tp->end    = tp->start + tp->length;
+  tp->digest  = 0;
+  tp->crypto  = 0;
+  
+  tp->b_size  = dp->stripe_size;
+  tp->b_total = dp->media_size / tp->b_size;
+  
+  tp->b_start = 0;
+  
+  tp->b_length = tp->b_total - tp->b_start;
+  tp->b_end    = tp->b_start + tp->b_length;
 
   tp->obuf = malloc(tp->b_size);
   if (!tp->obuf)
@@ -452,151 +483,188 @@ test_init(TEST *tp,
   if (!tp->rbuf)
     return -1;
 
+  tp->blocks = d_blocks;
   return 0;
+}
+
+
+
+
+int
+str2off(const char *str,
+	off_t *vp,
+	int b1024,
+	const char **rest) {
+  off_t base = 1000;
+  char c, i;
+  int rc;
+  
+  
+  if (f_ibase || b1024)
+    base = 1024;
+  
+  c = i = 0;
+  rc = sscanf(str, "%ld%c%c", vp, &c, &i);
+  if (rc < 1)
+    return rc;
+
+  if (rest) {
+    *rest = str;
+    if (**rest == '-')
+      ++*rest;
+    
+    while (**rest && isdigit(**rest))
+      ++*rest;
+  }
+  
+  if (i == 'i')
+    base = 1024;
+  
+  switch (toupper(c)) {
+  case 'K':
+    *vp *= base;
+    break;
+    
+  case 'M':
+    *vp *= base*base;
+    if (rest)
+      ++*rest;
+    break;
+    
+  case 'G':
+    *vp *= base*base*base;
+    if (rest)
+      ++*rest;
+    break;
+    
+  case 'T':
+    *vp *= base*base*base*base;
+    if (rest)
+      ++*rest;
+    break;
+    
+  case 'P':
+    *vp *= base*base*base*base;
+    if (rest)
+      ++*rest;
+    break;
+
+  default:
+    return 1;
+  }
+  
+  if (rest) {
+    if (i == 'i')
+      ++*rest;
+    ++*rest;
+  }
+  
+  return 1;
 }
 
 
 int
 str2int(const char *str,
 	int *vp) {
-  char c;
+  off_t ov;
   int rc;
-  
-  
-  c = 0;  
-  rc = sscanf(str, "%d%c", vp, &c);
+
+  rc = str2off(str, &ov, 0, NULL);
   if (rc < 1)
     return rc;
+
+  if (ov < INT_MIN || ov > INT_MAX) {
+    errno = ERANGE;
+    return -1;
+  }
   
-  switch (toupper(c)) {
+  *vp = ov;
+  return rc;
+}
+
+
+int
+str2bytes(const char *str,
+	  off_t *vp,
+	  int b1024,
+	  TEST *tp) {
+  const char *rest = NULL;
+  DEVICE *dp = tp->dev;
+  int rc;
+  off_t v;
+  
+  
+  rc = str2off(str, vp, b1024, &rest);
+  if (rc < 1)
+    return rc;
+
+  if (!rest)
+    return rc;
+  
+  switch (toupper(*rest)) {
   case 0:
     break;
-    
-  case 'K':
-    *vp *= 1000;
+
+  case '%':
+    *vp = (tp->b_total * tp->b_size * 100) / *vp;
     break;
     
-  case 'M':
-    *vp *= 1000000;
+    
+  case 'B':
+    *vp *= tp->b_size;
     break;
     
-  case 'G':
-    *vp *= 1000000000;
+  case 'N':
+    *vp *= dp->stripe_size;
+    break;
+    
+  case 'S':
+    *vp *= dp->sector_size;
     break;
     
   default:
     return -1;
   }
+  
+  /* Make sure it's a multiple of the sector size */
+  v = *vp / dp->sector_size;
+  if (v * dp->sector_size != *vp)
+    return -1;
 
   return 1;
 }
 
 int
-str2off(const char *str,
-	off_t *vp,
-	int f_b2f,
-	DEVICE *dp) {
-  char cbuf[4], *cp = NULL;
+str2blocks(const char *str,
+	   off_t *vp,
+	   int b1024,
+	   TEST *tp) {
+  const char *rest = NULL;
   int rc;
-  off_t base = 1000;
-
   
-  if (f_ibase || f_b2f) {
-    base = 1024;
-    f_b2f = 1;
-  }
   
-  memset(cbuf, 0, sizeof(cbuf));
-  
-  rc = sscanf(str, "%ld%3s", vp, cbuf);
+  rc = str2off(str, vp, b1024, &rest);
   if (rc < 1)
     return rc;
 
-  if (rc > 1 && cbuf[0]) {
-    cp = cbuf;
+  if (!rest)
+    return rc;
 
-    switch (toupper(*cp++)) {
-    case 0:
-      break;
+  switch (toupper(*rest)) {
+  case 0:
+    break;
 
-    case 'B':
-    case 'E':
-    case 'S':
-      --cp;
-      break;
-      
-    case 'K':
-      if (*cp == 'i') {
-	base = 1024;
-	++cp;
-      }
-      *vp *= base;
-      break;
-      
-    case 'M':
-      if (*cp == 'i') {
-	base = 1024;
-	++cp;
-      }
-      *vp *= base*base;
-      break;
-      
-    case 'G':
-      if (*cp == 'i') {
-	base = 1024;
-	++cp;
-      }
-      *vp *= base*base*base;
-      break;
-      
-    case 'T':
-      if (*cp == 'i') {
-	base = 1024;
-	++cp;
-      }
-      *vp *= base*base*base*base;
-      break;
-      
-    case 'P':
-      if (*cp == 'i') {
-	base = 1024;
-	++cp;
-      }
-      *vp *= (unsigned long long) base*base*base*base;
-      break;
-      
-    default:
-      return -1;
-    }
-  }
-
-  if (dp && cp) {
-    off_t v;
-
-    switch (toupper(*cp)) {
-    case 0:
-      break;
-      
-    case 'B':
-      *vp *= dp->stripe_size;
-      break;
-
-    case 'S':
-      *vp *= dp->sector_size;
-      break;
-
-    default:
-      return -1;
-    }
-      
-    /* Make sure it's a multiple of the sector size */
-    v = *vp / dp->sector_size;
-    if (v * dp->sector_size != *vp)
-      return -1;
+  case '%':
+    *vp = (tp->b_total * *vp) / 100;
+    break;
+    
+  default:
+    return -1;
   }
   
   return 1;
 }
+
 
 int
 str2time(const char *str,
@@ -652,43 +720,54 @@ int2str(off_t b,
 	size_t bufsize,
 	int b2f) {
   int base = 1000;
-
+  off_t t;
   
-  if (f_ibase || b2f) {
-    base = 1024;
+  
+  if (f_ibase)
     b2f = 1;
+  if (b2f)
+    base = 1024;
+
+  if (b == 0) {
+    strcpy(buf, "0");
+    return buf;
   }
   
-  if (llabs(b) < 10000) {
+  t = b/base;
+  if (llabs(b) < 10000 && (t*base != b)) {
     snprintf(buf, bufsize, "%ld", b);
     return buf;
   }
   
   b /= base;
-  if (llabs(b) < 10000) {
-    snprintf(buf, bufsize, "%ldK%s", b, b2f ? "i" : "");
+  t = b/base;
+  if (llabs(b) < 10000 && (t*base != b)) {
+    snprintf(buf, bufsize, "%ldK%s", b, b2f == 1 ? "i" : "");
     return buf;
   }
   
   b /= base;
-  if (llabs(b) < 10000) {
-    snprintf(buf, bufsize, "%ldM%s", b, b2f ? "i" : "");
+  t = b/base;
+  if (llabs(b) < 10000 && (t*base != b)) {
+    snprintf(buf, bufsize, "%ldM%s", b, b2f == 1 ? "i" : "");
     return buf;
   }
   
   b /= base;
-  if (llabs(b) < 10000) {
-    snprintf(buf, bufsize, "%ldG%s", b, b2f ? "i" : "");
+  t = b/base;
+  if (llabs(b) < 10000 && (t*base != b)) {
+    snprintf(buf, bufsize, "%ldG%s", b, b2f == 1 ? "i" : "");
     return buf;
   }
   
   b /= base;
-  if (llabs(b) < 10000) {
-    snprintf(buf, bufsize, "%ldT%s", b, b2f ? "i" : "");
+  t = b/base;
+  if (llabs(b) < 10000 && (t*base != b)) {
+    snprintf(buf, bufsize, "%ldT%s", b, b2f == 1 ? "i" : "");
     return buf;
   }
   
-  snprintf(buf, bufsize, "%ldP%s", b, b2f ? "i" : "");
+  snprintf(buf, bufsize, "%ldP%s", b, b2f == 1 ? "i" : "");
   return buf;
 }
 
@@ -803,8 +882,7 @@ void
 dev_print(FILE *fp,
 	  int idx,
 	  DEVICE *dp) {
-  char sbuf[256];
-  char bbuf[256];
+  char sbuf[256], bbuf[256], xbuf[256];
   
 
   if (idx)
@@ -812,30 +890,29 @@ dev_print(FILE *fp,
   else
     fprintf(fp, "\t");
   
-  if (dp->provider_name)
-    fprintf(fp, "%s", dp->provider_name);
+  fprintf(fp, "%s", dp->name);
 
-  switch (dp->type) {
-  case TYPE_DISK:
-    fprintf(fp, " (DISK)");
-    break;
-  case TYPE_SSD:
-    fprintf(fp, " (SSD)");
-    break;
-  }
-  
   if (dp->ident && dp->ident[0])
     fprintf(fp, " <%s>", dp->ident);
 
-  fprintf(fp, " : %sB (%s sectors @ %ldn",
-		 int2str(dp->media_size, sbuf, sizeof(sbuf), 0),
-		 int2str(dp->sectors, bbuf, sizeof(bbuf), 0),
-		 dp->stripe_size);
+  fprintf(fp, " : %sB (%s sectors @ %sn",
+	  int2str(dp->media_size, sbuf, sizeof(sbuf), 0),
+	  int2str(dp->sectors, bbuf, sizeof(bbuf), 0),
+	  int2str(dp->stripe_size, xbuf, sizeof(xbuf), 2));
   
   if (dp->sector_size != dp->stripe_size)
-    fprintf(fp, "/%lde", dp->sector_size);
+    fprintf(fp, "/%se",
+	    int2str(dp->sector_size, xbuf, sizeof(xbuf), 2));
   
   putc(')', fp);
+  
+  putc(' ', fp);
+  putc(':', fp);
+  if (dp->flags.is_ssd)
+    fprintf(fp, " SSD");
+  if (dp->flags.is_open)
+    fprintf(fp, " OPEN");
+  
   putc('\n', fp);
 
   if (f_verbose) {
@@ -862,25 +939,45 @@ dev_print(FILE *fp,
 
 
 DEVICE *
-dev_open(const char *path) {
+dev_open(const char *name) {
   char pnbuf[MAXPATHLEN];
   char idbuf[DISK_IDENT_SIZE];
+  char gbuf[256];
   int s_errno;
   DEVICE *dp;
   int is_rotating = -1;
   size_t isrs = sizeof(is_rotating);
   struct cam_device *cam;
+  u_int geom_flags;
   
   
   dp = malloc(sizeof(*dp));
   if (!dp)
     return NULL;
 
+  dp->name = strdup(name);
+  if (!dp->name)
+    goto Fail;
+  
   dp->fd = -1;
-  if (*path == '/')
-    dp->path = strdup(path);
+  if (*name == '/') {
+    dp->path = strdup(name);
+    
+    dp->name = strrchr(name, '/');
+    dp->name++;
+  }
   else
-    dp->path = strxdup("/dev/", path, NULL);
+    dp->path = strxdup("/dev/", name, NULL);
+
+  dev_cam_sysctl(dp, "rotating", &is_rotating, &isrs);
+  dp->flags.is_ssd = (is_rotating ? 0 : 1);
+
+  geom_flags = 0;
+  isrs = sizeof(gbuf);
+  dev_geom_sysctl(dp, "flags", gbuf, &isrs);
+  if (sscanf(gbuf, "%02x", &geom_flags) == 1) 
+    dp->flags.is_open = (geom_flags & 0x0002) ? 1 : 0;
+
   
   dp->fd = open(dp->path, (f_update ? O_RDWR : O_RDONLY), 0);
   if (dp->fd < 0)
@@ -935,6 +1032,10 @@ dev_open(const char *path) {
     dp->provider_name = strndup(pnbuf, sizeof(pnbuf));
     if (!dp->provider_name)
       goto Fail;
+    free(dp->name);
+    dp->name = strdup(dp->provider_name);
+    if (!dp->name)
+      goto Fail;
   }
   
   dp->ident = NULL;
@@ -951,18 +1052,6 @@ dev_open(const char *path) {
     dp->physical_path = strndup(pnbuf, sizeof(pnbuf)); 
     if (!dp->physical_path)
       goto Fail;
-  }
-
-  dp->type = TYPE_UNKNOWN;
-  dev_sysctl(dp, "rotating", &is_rotating, &isrs);
-  switch (is_rotating) {
-  case 0:
-    dp->type = TYPE_SSD;
-    break;
-
-  case 1:
-    dp->type = TYPE_DISK;
-    break;
   }
 
   cam = cam_open_device(dp->path, O_RDWR);
@@ -1055,15 +1144,17 @@ disks_print(void) {
 void
 test_pstatus(FILE *fp,
 	     TEST *tp,
-	     struct timespec *now) {
+	     struct timespec *now,
+	     off_t bno) {
   long time_left;
   off_t bytes_done, bytes_left, bytes_total, bytes_rate_avg, bytes_done_pct;
   char ibuf[256], tbuf[256], pbuf[256];
 
 
-  bytes_done = tp->pos - tp->start;
-  bytes_left = tp->length - bytes_done;
-  bytes_total = tp->length;
+  bytes_done  = bno * tp->b_size;
+  bytes_total = tp->b_length * tp->b_size;
+  bytes_left  = bytes_total - bytes_done;
+  
   bytes_done_pct = bytes_total ? (100 * bytes_done) / bytes_total : 0;
   
   bytes_rate_avg = rate_get(&tp->rate);
@@ -1073,7 +1164,8 @@ test_pstatus(FILE *fp,
   else
     time_left = bytes_rate_avg ? bytes_left / bytes_rate_avg : 0;
   
-  fprintf(fp, "    %15sB (%sB/s): %ld%% done",
+  fprintf(fp, "    %15ld : %7sB @ %5sB/s : %4ld%% done",
+	  bno, 
 	  int2str(bytes_done, pbuf, sizeof(pbuf), 0),
 	  int2str(bytes_rate_avg, ibuf, sizeof(ibuf), 0),
 	  bytes_done_pct);
@@ -1101,25 +1193,46 @@ int
 test_trim(TEST *tp) {
   DEVICE *dp = tp->dev;
   int rc;
-
-
-  rc = dev_delete(dp, tp->start, tp->length);
-  if (rc < 0) {
-    fprintf(stderr, "%s: Error: %s: TRIM %ld bytes @ %ld failed: %s\n",
-	    argv0, dp->path, tp->length, tp->start, strerror(errno));
-    exit(1);
+  off_t i;
+  
+  for (i = tp->b_start; i < tp->b_end; i++) {
+    off_t pos = i * tp->b_size;
+    
+    rc = dev_delete(dp, pos, tp->b_size);
+    if (rc < 0) {
+      fprintf(stderr, "%s: Error: %s: TRIM %ld bytes @ %ld failed: %s\n",
+	      argv0, dp->path, tp->b_size, pos, strerror(errno));
+      exit(1);
+    }
   }
 
   return 0;
 }
   
-  
+
+/* Return number of equal bytes from the start */
+size_t
+mem_verify(unsigned char *a,
+	   unsigned char *b,
+	   size_t s) {
+  size_t p = 0;
+
+
+  while (p < s && a[p] == b[p])
+    ++p;
+
+  return p;
+}
+
+
+
+/* Run a test sequence */
 int
 test_seq(TEST *tp) {
   DEVICE *dp = tp->dev;
   struct timespec now;
-  ssize_t len, rc;
-  off_t opos;
+  ssize_t rc;
+  off_t b, b_pos, pos, bytes_done;
   int nw, n_write;
   double td;
   
@@ -1128,44 +1241,50 @@ test_seq(TEST *tp) {
   tp->t0 = now;
   tp->t1 = now;
   
-  tp->pos = tp->start;
-  opos = tp->pos;
-  
-  while ((len = tp->end - tp->pos) > 0 &&
-	 (!tp->t_max || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->t_max)) {
-    
-    if (len > tp->b_size)
-      len = tp->b_size;
+ 
+  bytes_done = 0;
 
+  for (b = 0; b < tp->b_length && (!tp->t_max || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->t_max); ++b) {
+
+    if (tp->blocks && b < tp->blocks->s)
+      b_pos = tp->blocks->v[b];
+    else if (f_random)
+      b_pos = orand(tp->b_length);
+    else
+      b_pos = b;
+
+    pos = b_pos * tp->b_size;
+    
     if (tp->flags & TEST_READ) {
       /* Read original data */
       
-      rc = pread(dp->fd, tp->obuf, len, tp->pos);
-      if (rc != len) {
+      rc = pread(dp->fd, tp->obuf, tp->b_size, pos);
+      if (rc != tp->b_size) {
 	if (rc < 0) {
-	  fprintf(stderr, "%s: Error: %s: Reading %ld bytes @ %ld: %s\n",
+	  fprintf(stderr, "%s: Error: %s: Reading %ld bytes @ block %ld (offset %ld): %s\n",
 		  argv0,
 		  dp->path,
-		  len,
-		  tp->pos,
+		  tp->b_size,
+		  b_pos,
+		  pos,
 		  strerror(errno));
 	  exit(1);
 	} else {
-	  if (rc < dp->sector_size)
-	    fprintf(stderr, "%s: Error: %s: Short read (%ld bytes) at %ld\n",
-		    argv0,
-		    dp->path,
-		    rc,
-		    tp->pos);
+	  fprintf(stderr, "%s: Error: %s: Short read (%ld bytes) @ block %ld (offset %ld)\n",
+		  argv0,
+		  dp->path,
+		  rc,
+		  b_pos,
+		  pos);
 	  exit(1);
 	}
       }
     }
-
+    
     if (tp->flags & TEST_RESTORE)
       /* Ignore Ctrl-C at this time in order to prevent data corruption */
       signal(SIGINT, sigint_handler);
-
+    
     n_write = 1;
     if (tp->flags & TEST_PURGE)
       n_write = NUM_PURGE_PATTERNS+1;
@@ -1173,34 +1292,42 @@ test_seq(TEST *tp) {
     for (nw = 0; nw < n_write; nw++) {
       if (tp->flags & TEST_PURGE) {
 	if (nw < NUM_PURGE_PATTERNS)
-	  pattern_fill(tp->wbuf, len, purge_patterns[nw], sizeof(purge_patterns[nw]));
+	  pattern_fill(tp->wbuf, tp->b_size, purge_patterns[nw], sizeof(purge_patterns[nw]));
 	else {
-	  uint32_t rv = mrand48();
+	  int i;
 	  
-	  pattern_fill(tp->wbuf, len, (unsigned char *) &rv, sizeof(rv));
+	  for (i = 0; i < tp->b_size; i++)
+	    tp->wbuf[i] = (unsigned char) lrand48();
 	}
+      }
+
+      switch (tp->crypto) {
+      case TEST_CRYPTO_XOR:
+	buf_xor(tp->wbuf, tp->b_size, 0xFF);
+	break;
       }
       
       if (tp->flags & TEST_WRITE) {
 	/* Write new test data */
 	
-	rc = pwrite(dp->fd, tp->wbuf, len, tp->pos);
-	if (rc != len) {
+	rc = pwrite(dp->fd, tp->wbuf, tp->b_size, pos);
+	if (rc != tp->b_size) {
 	  if (rc < 0) {
-	    fprintf(stderr, "%s: Error: %s: Writing %ld bytes @ %ld: %s\n",
+	    fprintf(stderr, "%s: Error: %s: Writing %ld bytes @ block %ld (offset %ld): %s\n",
 		    argv0,
 		    dp->path,
-		    len,
-		    tp->pos,
+		    tp->b_size,
+		    b_pos,
+		    pos,
 		    strerror(errno));
 	    exit(1);
 	  } else {
-	    if (rc < dp->sector_size)
-	      fprintf(stderr, "%s: Error: %s: Short write (%ld bytes) at %ld\n",
-		      argv0,
-		      dp->path,
-		      rc,
-		      tp->pos);
+	    fprintf(stderr, "%s: Error: %s: Short write (%ld bytes) @ block %ld (offset %ld)\n",
+		    argv0,
+		    dp->path,
+		    rc,
+		    b_pos,
+		    pos);
 	    exit(1);
 	  }
 	}
@@ -1211,8 +1338,8 @@ test_seq(TEST *tp) {
 	
 	rc = dev_flush(dp);
 	if (rc < 0) {
-	  fprintf(stderr, "%s: Error: %s: FLUSH failed @ %ld: %s\n",
-		  argv0, dp->path, tp->pos, strerror(errno));
+	  fprintf(stderr, "%s: Error: %s: FLUSH failed @ block %ld (offset %ld): %s\n",
+		  argv0, dp->path, b_pos, pos, strerror(errno));
 	  exit(1);
 	}
       }
@@ -1220,44 +1347,48 @@ test_seq(TEST *tp) {
       if (tp->flags & TEST_VERIFY) {
 	/* Read back block to verify the just written data */
 	
-	rc = pread(dp->fd, tp->rbuf, len, tp->pos);
-	if (rc != len) {
+	rc = pread(dp->fd, tp->rbuf, tp->b_size, pos);
+	if (rc != tp->b_size) {
 	  if (rc < 0) {
-	    fprintf(stderr, "%s: Error: %s: Reading %ld bytes @ %ld: %s\n",
+	    fprintf(stderr, "%s: Error: %s: Reading %ld bytes @ block %ld (offset %ld): %s\n",
 		    argv0,
 		    dp->path,
-		    len,
-		    tp->pos,
+		    tp->b_size,
+		    b_pos,
+		    pos,
 		    strerror(errno));
 	    exit(1);
 	  } else {
-	    if (rc < dp->sector_size)
-	      fprintf(stderr, "%s: Error: %s: Short read (%ld bytes) at %ld\n",
-		      argv0,
-		      dp->path,
-		      rc,
-		      tp->pos);
+	    fprintf(stderr, "%s: Error: %s: Short read (%ld bytes) @ block %ld (offset %ld)\n",
+		    argv0,
+		    dp->path,
+		    rc,
+		    b_pos,
+		    pos);
 	    exit(1);
 	  }
 	}
-
-	if (memcmp(tp->wbuf, tp->rbuf, len) != 0) {
-	  fprintf(stderr, "%s: Error: %s: Verify for block at @ %ld\n",
+	
+	rc = mem_verify(tp->wbuf, tp->rbuf, tp->b_size);
+	if (rc != tp->b_size) {
+	  fprintf(stderr, "%s: Error: %s: Verify failed @ block %ld+%ld (offset %ld)\n",
 		  argv0,
 		  dp->path,
-		  tp->pos);
+		  b_pos,
+		  rc,
+		  pos+rc);
 	  exit(1);
 	}
       }
     }
-
+    
     if (f_delete && (tp->flags & TEST_DELETE)) {
       /* TRIM block from (SSD) device */
       
-      rc = dev_delete(dp, tp->pos, len);
+      rc = dev_delete(dp, pos, tp->b_size);
       if (rc < 0) {
-	fprintf(stderr, "%s: Error: %s: TRIM failed @ %ld: %s\n",
-		argv0, dp->path, tp->pos, strerror(errno));
+	fprintf(stderr, "%s: Error: %s: TRIM failed @ block %ld (offset %ld): %s\n",
+		argv0, dp->path, b_pos, pos, strerror(errno));
 	exit(1);
       }
     }
@@ -1265,54 +1396,58 @@ test_seq(TEST *tp) {
     if (tp->flags & TEST_RESTORE) {
       /* Restore the original block */
       
-      rc = pwrite(dp->fd, tp->obuf, len, tp->pos);
-      if (rc != len) {
+      rc = pwrite(dp->fd, tp->obuf, tp->b_size, pos);
+      if (rc != tp->b_size) {
 	if (rc < 0) {
-	  fprintf(stderr, "%s: Fatal: %s: Unable to restore original block @ %ld: %s\n",
+	  fprintf(stderr, "%s: Error: %s: Unable to restore original @ block %ld (offset %ld): %s\n",
 		  argv0,
 		  dp->path,
-		  tp->pos,
+		  b_pos,
+		  pos,
 		  strerror(errno));
 	  exit(1);
 	} else {
-	  if (rc < dp->sector_size)
-	    fprintf(stderr, "%s: Fatal: %s: Short write (%ld bytes) while restoring original block @ %ld\n",
-		    argv0,
-		    dp->path,
-		    rc,
-		    tp->pos);
+	  fprintf(stderr, "%s: Fatal: %s: Short write (%ld bytes) while restoring original @ block %ld (offset %ld)\n",
+		  argv0,
+		  dp->path,
+		  rc,
+		  b_pos,
+		  pos);
 	  exit(1);
 	}
       }	
       
       /* Read back block to verify the just written data */
-      
-      rc = pread(dp->fd, tp->rbuf, len, tp->pos);
-      if (rc != len) {
+      rc = pread(dp->fd, tp->rbuf, tp->b_size, pos);
+      if (rc != tp->b_size) {
 	if (rc < 0) {
-	  fprintf(stderr, "%s: Error: %s: Reading %ld bytes @ %ld: %s\n",
+	  fprintf(stderr, "%s: Error: %s: Reading %ld bytes @ block %ld (offset %ld): %s\n",
 		  argv0,
 		  dp->path,
-		  len,
-		  tp->pos,
+		  tp->b_size,
+		  b_pos,
+		  pos,
 		  strerror(errno));
 	  exit(1);
 	} else {
-	  if (rc < dp->sector_size)
-	    fprintf(stderr, "%s: Error: %s: Short read (%ld bytes) at %ld\n",
-		    argv0,
-		    dp->path,
-		    rc,
-		    tp->pos);
+	  fprintf(stderr, "%s: Error: %s: Short read (%ld bytes) @ block %ld (offset %ld)\n",
+		  argv0,
+		  dp->path,
+		  rc,
+		  b_pos,
+		  pos);
 	  exit(1);
 	}
       }
       
-      if (memcmp(tp->obuf, tp->rbuf, len) != 0) {
-	fprintf(stderr, "%s: Fatal: %s: Verify failed while restoring original block @ %ld\n",
+      rc = mem_verify(tp->obuf, tp->rbuf, tp->b_size);
+      if (rc != tp->b_size) {
+	fprintf(stderr, "%s: Error: %s: Original restore verify failed @ block %ld+%ld (offset %ld)\n",
 		argv0,
 		dp->path,
-		tp->pos-len);
+		b_pos,
+		rc,
+		pos+rc);
 	exit(1);
       }
     }
@@ -1324,7 +1459,7 @@ test_seq(TEST *tp) {
       exit(1);
     }
       
-    if (tp->checksum) {
+    if (tp->digest) {
       unsigned char *tbuf = tp->obuf;
       
       if (tp->flags & TEST_WRITE)
@@ -1333,46 +1468,42 @@ test_seq(TEST *tp) {
       if (tp->flags & TEST_VERIFY)
 	tbuf = tp->rbuf;
       
-      switch (tp->checksum) {
-      case CHECK_SHA224:
+      switch (tp->digest) {
+      case TEST_DIGEST_SHA224:
 	SHA224_Update(&tp->ctx.sha224, tbuf, rc);
 	break;
 	
-      case CHECK_SHA256:
+      case TEST_DIGEST_SHA256:
 	SHA256_Update(&tp->ctx.sha256, tbuf, rc);
 	break;
 	
-      case CHECK_SHA512:
+      case TEST_DIGEST_SHA512:
 	SHA512_Update(&tp->ctx.sha512, tbuf, rc);
 	break;
       }
     }
 
-    tp->b_last = len;
-    tp->pos += len;
-    
+    bytes_done += tp->b_size;
     clock_gettime(CLOCK_REALTIME, &now);
     
     td = ts_delta(&now, &tp->t1, NULL, NULL);
     if (td*1000 > f_update_freq) {
-      off_t bytes = tp->pos - opos;
-      
       if (td) {
 	off_t bytes_rate;
 	
-	bytes_rate = bytes / td;
+	bytes_rate = bytes_done / td;
 	rate_update(&tp->rate, bytes_rate);
-	
-	opos = tp->pos;
+
+	bytes_done = 0;
 	tp->t1 = now;
       }
 
-      test_pstatus(stderr, tp, &now);
+      test_pstatus(stderr, tp, &now, b);
       fputc('\r', stderr);
     }
   }
   
-  test_pstatus(stderr, tp, &now);
+  test_pstatus(stderr, tp, &now, b);
   fputc('\n', stderr);
   return 0;
 }
@@ -1401,26 +1532,42 @@ spin(FILE *fp) {
 
 
 void
-p_buffer(FILE *fp,
+buf_print(FILE *fp,
 	 unsigned char *buf,
 	 size_t size,
 	 int mode) {
-  unsigned long i;
+  size_t i, j;
 
   
-  for (i = 0; i < size; i++) {
-    if (mode && !(i%16)) { 
-      putc('\n', fp);
+  i = 0;
+  while (i < size) {
+    if (mode) {
+      putc(' ', fp);
       putc(' ', fp);
       if (mode > 1)
 	fprintf(fp, "%08lX : ", i);
     }
-    if (mode)
+    
+    for (j = 0; j < 16 && i+j < size; j++) {
+      if (j)
+	putc(' ', fp);
+      fprintf(fp, "%02X", buf[i+j]);
+    }
+
+    if (mode > 2) {
       putc(' ', fp);
-    fprintf(fp, "%02X", buf[i]);
+      putc(':', fp);
+      putc(' ', fp);
+      for (j = 0; j < 16 && i+j < size; j++) {
+	putc(isprint(buf[i+j]) ? buf[i+j] : '?', fp);
+	putc(' ', fp);
+      }
+    }
+
+    i += j;
+    if (mode)
+      putc('\n', fp);
   }
-  if (mode)
-    putc('\n', fp);
 }
 
 
@@ -1430,17 +1577,19 @@ usage(FILE *fp) {
 	  argv0);
   fprintf(fp, "\nOptions:\n");
   fprintf(fp, "  -h               Display this information\n");
-  fprintf(fp, "  -v               Increase verbosity\n");
-  fprintf(fp, "  -w               Open device in R/W mode (needed for write tests)\n");
-  fprintf(fp, "  -f               Flush device write buffer\n");
-  fprintf(fp, "  -d               Send TRIM commands to device\n");
-  fprintf(fp, "  -p               Print last block\n");
-  fprintf(fp, "  -C <type>        Checksum type (SHA224 - SHA256 - SHA512)\n");
-  fprintf(fp, "  -T <time>        Limit test time\n");
-  fprintf(fp, "  -P <num>         Passes [%d]\n", d_passes);
-  fprintf(fp, "  -S <off>         Start offset [0]\n");
-  fprintf(fp, "  -L <off>         Length [ALL]\n");
-  fprintf(fp, "  -B <size>        Block size [<native>]\n");
+  fprintf(fp, "  -v               Increase verbosity [NO]\n");
+  fprintf(fp, "  -w               Open device in R/W mode (needed for write tests) [RO]\n");
+  fprintf(fp, "  -y               Answer yes to all questions [NO]\n");
+  fprintf(fp, "  -r               Random block order (-rr for shuffled order) [NO]\n");
+  fprintf(fp, "  -f               Flush device write buffer [NO]\n");
+  fprintf(fp, "  -d               Enable sending TRIM commands to device [NO]\n");
+  fprintf(fp, "  -p               Print last block [NO]\n");
+  fprintf(fp, "  -D <type>        Digest (checksum) type (SHA224 - SHA256 - SHA512) [NONE]\n");
+  fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
+  fprintf(fp, "  -P <num>         Number of passes [%d]\n", d_passes);
+  fprintf(fp, "  -S <pos>         Starting block offset [FIRST]\n");
+  fprintf(fp, "  -L <size>        Number of blocks [ALL]\n");
+  fprintf(fp, "  -B <size>        Block size [NATIVE]\n");
   fprintf(fp, "\nActions:\n");
   fprintf(fp, "  read             Read-only test [doesn't harm OS]\n");
   fprintf(fp, "  refresh          Read+Rewrite test [doesn't harm data]\n");
@@ -1454,6 +1603,9 @@ usage(FILE *fp) {
   fprintf(fp, "  - Beware of using any of the write tests on SSD devices. Due\n");
   fprintf(fp, "    to the way they operate (with remapping of blocks for wear levelling)\n");
   fprintf(fp, "    you will not test what you intend and instead just make them fail faster.\n");
+  fprintf(fp, "  - Beware that the Shuffle (-rr) option allocates a lot of RAM, typically\n");
+  fprintf(fp, "    8 bytes times the number of blocks of the device but it guarantees that\n");
+  fprintf(fp, "    all blocks in the requested range will be visited.\n");
 }
 
 
@@ -1496,15 +1648,24 @@ prompt_yes(const char *msg,
 
 
 int
-str2checksum(const char *s) {
+str2digest(const char *s) {
   if (strcasecmp(s, "224") == 0 || strcasecmp(s, "SHA224") == 0 || strcasecmp(s, "SHA-224") == 0)
-    return CHECK_SHA224;
+    return TEST_DIGEST_SHA224;
   
   if (strcasecmp(s, "256") == 0 || strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
-    return CHECK_SHA256;
+    return TEST_DIGEST_SHA256;
 
   if (strcasecmp(s, "512") == 0 || strcasecmp(s, "SHA512") == 0 || strcasecmp(s, "SHA-512") == 0)
-    return CHECK_SHA512;
+    return TEST_DIGEST_SHA512;
+
+  return -1;
+}
+
+
+int
+str2crypto(const char *s) {
+  if (strcasecmp(s, "XOR") == 0)
+    return TEST_CRYPTO_XOR;
 
   return -1;
 }
@@ -1521,7 +1682,8 @@ main(int argc,
   unsigned char o_digest[64], digest[64];
   int (*tstfun)(TEST *tp);
 
-  char *s_checksum = NULL;
+  char *s_digest = NULL;
+  char *s_crypto = NULL;
   char *s_time = NULL;
   char *s_passes = NULL;
   char *s_start = NULL;
@@ -1551,6 +1713,10 @@ main(int argc,
 	++f_verbose;
 	break;
 
+      case 'r':
+	++f_random;
+	break;
+
       case 'f':
 	++f_flush;
 	break;
@@ -1567,13 +1733,24 @@ main(int argc,
 	++f_delete;
 	break;
 
+      case 'D':
+	if (argv[i][j+1])
+	  s_digest = argv[i]+j+1;
+	else if (argv[i+1])
+	  s_digest = argv[++i];
+	else {
+	  fprintf(stderr, "%s: Error: -D: Missing digest type\n", argv0);
+	  exit(1);
+	}
+	goto NextArg;
+	
       case 'C':
 	if (argv[i][j+1])
-	  s_checksum = argv[i]+j+1;
+	  s_crypto = argv[i]+j+1;
 	else if (argv[i+1])
-	  s_checksum = argv[++i];
+	  s_crypto = argv[++i];
 	else {
-	  fprintf(stderr, "%s: Error: -C: Missing checksum type\n", argv0);
+	  fprintf(stderr, "%s: Error: -C: Missing crypto type\n", argv0);
 	  exit(1);
 	}
 	goto NextArg;
@@ -1662,90 +1839,125 @@ main(int argc,
   puts("SELECTED DISK:");
   dev_print(stdout, 0, dev);
   putchar('\n');
+
+  if (dev->flags.is_ssd && f_update && !f_yes) {
+    rc = prompt_yes("*** DEVICE IS SSD ***\nBeware of any tests that write data to the device! Proceed anyway?");
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      exit(0);
+    }
+  }
   
-  if (dev) {
-    test_init(&tst, dev);
-
-    if (s_bsize) {
-      rc = str2off(s_bsize, &tst.b_size, 1, dev);
-      if (rc < 1) {
-	fprintf(stderr, "%s: Error: %s: Invalid block size\n",
-		argv0, s_bsize);
-	exit(1);
-      }
+  if (dev->flags.is_open && f_update && !f_yes) {
+    rc = prompt_yes("*** DEVICE IS IN USE ***\nProceed anyway?");
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      exit(0);
     }
+  }
+  
+  test_init(&tst, dev);
+  
+  if (s_bsize) {
+    off_t v;
     
-    if (s_start) {
-      off_t v = 0;
-      
-      rc = str2off(s_start, &v, 0, dev);
-      if (rc < 1 || test_set_start(&tst, v) < 0) {
-	fprintf(stderr, "%s: Error: %s: Invalid start position\n",
-		argv0, s_start);
-	exit(1);
-      }
+    rc = str2bytes(s_bsize, &v, 1, &tst);
+    if (rc < 1 || test_set_bsize(&tst, v) < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid block size\n",
+	      argv0, s_bsize);
+      exit(1);
     }
-
-    if (s_length) {
-      off_t v = 0;
-
-      if (strcasecmp(s_length, "ALL") == 0 || strcasecmp(s_length, "0E") == 0) {
-	v = tst.dev->media_size - tst.start;
-	rc = 1;
-      } else
-	rc = str2off(s_length, &v, 0, dev);
-      
-      if (rc < 1 || test_set_length(&tst, v) < 0) {
-	fprintf(stderr, "%s: Error: %s: Invalid length\n",
-		argv0, s_length);
-	exit(1);
-      }
-    }
-
-    if (s_passes) {
-      rc = str2int(s_passes, &tst.passes);
-      if (rc < 1) {
-	fprintf(stderr, "%s: Error: %s: Invalid number of passes\n",
-		argv0, s_passes);
-	exit(1);
-      }
-    }
+  }
+  
+  if (s_start) {
+    off_t v = 0;
     
-    if (s_time) {
-      rc = str2time(s_time, &tst.t_max);
-      if (rc < 1) {
-	fprintf(stderr, "%s: Error: %s: Invalid time\n",
-		argv0, arg);
-	exit(1);
-      }
+    rc = str2blocks(s_start, &v, 0, &tst);
+    if (rc < 1 || test_set_start(&tst, v) < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid start block\n",
+	      argv0, s_start);
+      exit(1);
     }
-
-    if (s_checksum) {
-      tst.checksum = str2checksum(s_checksum);
-      if (tst.checksum < 0) {
-	fprintf(stderr, "%s: Error: %s: Invalid checksum type\n",
-		argv0, s_checksum);
-	exit(1);
-      }
+  }
+  
+  if (s_length) {
+    off_t v = 0;
+    
+    if (strcasecmp(s_length, "ALL") == 0) {
+      v = tst.b_total;
+      rc = 1;
+    } else
+      rc = str2blocks(s_length, &v, 0, &tst);
+    
+    if (rc < 1 || test_set_length(&tst, v) < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid length\n",
+	      argv0, s_length);
+      exit(1);
     }
-	
-    if (f_verbose > 1) {
-      printf("Blocks:\n");
-      printf("  Size:   %lu\n", tst.b_size);
-      printf("  Start:  %ld\n", tst.start/tst.b_size);
-      printf("  Length: %ld\n", tst.length/tst.b_size);
-      printf("Device:\n");
-      printf("  Stripe Offset: %ld\n", tst.dev->stripe_offset);
-      printf("  Front Stuff:   %ld\n", tst.dev->front_reserved);
+  }
+  
+  if (s_passes) {
+    rc = str2int(s_passes, &tst.passes);
+    if (rc < 1) {
+      fprintf(stderr, "%s: Error: %s: Invalid number of passes\n",
+	      argv0, s_passes);
+      exit(1);
     }
+  }
+  
+  if (s_time) {
+    rc = str2time(s_time, &tst.t_max);
+    if (rc < 1) {
+      fprintf(stderr, "%s: Error: %s: Invalid time\n",
+	      argv0, arg);
+      exit(1);
+    }
+  }
+  
+  if (s_digest) {
+    tst.digest = str2digest(s_digest);
+    if (tst.digest < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid digest type\n",
+	      argv0, s_digest);
+      exit(1);
+    }
+  }
+  
+  if (s_crypto) {
+    tst.crypto = str2crypto(s_crypto);
+    if (tst.crypto < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid crypto type\n",
+	      argv0, s_crypto);
+      exit(1);
+    }
+  }
+  
+  if (f_random > 1) {
+    if (!tst.blocks)
+      tst.blocks = blocks_create(tst.b_length);
+    
+    blocks_shuffle(tst.blocks);
+  }
+  
+  if (f_verbose > 1) {
+    printf("Blocks:\n");
+    printf("  Size:   %lu\n", tst.b_size);
+    printf("  Start:  %ld\n", tst.b_start);
+    printf("  Length: %ld\n", tst.b_length);
+    printf("  End:    %ld\n", tst.b_end);
+    printf("Device:\n");
+    printf("  Sector Size:   %ld\n", tst.dev->sector_size);
+    printf("  Stripe Size:   %ld\n", tst.dev->stripe_size);
+    printf("  Stripe Offset: %ld\n", tst.dev->stripe_offset);
+    printf("  Front Stuff:   %ld\n", tst.dev->front_reserved);
   }
 
   for (; i < argc; i++) {
     unsigned int pass;
     char tbuf[256], bbuf[256], sbuf[256];
     char *tstname = "?";
-    off_t bytes = tst.length;
-    off_t blocks = bytes / tst.b_size;
+    off_t blocks = tst.b_length;
+    off_t bytes = blocks * tst.b_size;
     int rc;
 
     
@@ -1756,34 +1968,35 @@ main(int argc,
       
     } else if (strcmp(argv[i], "read") == 0) {
       
-      tstname = "Sequential Read Test";
+      tstname = "Read";
       tst.rbuf = tst.obuf;
       tst.flags = TEST_READ;
       tstfun = test_seq;
       
     } else if (strcmp(argv[i], "refresh") == 0) {
       
-      tstname = "Sequential Refresh Test";
+      tstname = "Refresh";
       tst.wbuf = tst.obuf;
+      tst.rbuf = tst.wbuf;
       tst.flags = TEST_READ|TEST_WRITE;
       tstfun = test_seq;
       
     } else if (strcmp(argv[i], "verify") == 0) {
       
-      tstname = "Sequential Refresh+Verify Test";
+      tstname = "Refresh+Verify";
       tst.wbuf = tst.obuf;
       tst.flags = TEST_READ|TEST_WRITE|TEST_VERIFY;
       tstfun = test_seq;
 
     } else if (strcmp(argv[i], "test") == 0) {
       
-      tstname = "Sequential Pattern Test";
+      tstname = "Pattern";
       tst.flags = TEST_READ|TEST_PATTERN|TEST_WRITE|TEST_VERIFY|TEST_RESTORE;
       tstfun = test_seq;
       
     } else if (strcmp(argv[i], "write") == 0) {
 
-      tstname = "Sequential Write Test";
+      tstname = "Write";
       
       rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
 		      tstname);
@@ -1798,7 +2011,7 @@ main(int argc,
       
     } else if (strcmp(argv[i], "compare") == 0) {
       
-      tstname = "Sequential Write+Read+Verify Test";
+      tstname = "Write+Read+Verify";
       
       rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
 		      tstname);
@@ -1812,7 +2025,7 @@ main(int argc,
       
     } else if (strcmp(argv[i], "purge") == 0) {
       
-      tstname = "Sequential Purge";
+      tstname = "Purge";
       
       rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
 		      tstname);
@@ -1858,7 +2071,8 @@ main(int argc,
 
     }
     
-    printf("%s (%sB / %s blocks @ %sB):\n",
+    printf("%s %s Test (%sB / %s blocks @ %sB):\n",
+	   f_random ? (f_random > 1 ? "Shuffled" : "Random") : "Sequential",
 	   tstname,
 	   int2str(bytes,  tbuf, sizeof(tbuf), 0),
 	   int2str(blocks, bbuf, sizeof(bbuf), 0),
@@ -1870,34 +2084,34 @@ main(int argc,
 	pattern_fill(tst.wbuf, tst.b_size, sel_pattern, sizeof(sel_pattern));
 	
 	printf("  Pass %u [", pass);
-	p_buffer(stdout, sel_pattern, sizeof(sel_pattern), 0);
+	buf_print(stdout, sel_pattern, sizeof(sel_pattern), 0);
 	printf("]:\n");
       } else if (tst.passes > 1)
 	printf("  Pass %u:\n", pass);
       
-      switch (tst.checksum) {
-      case CHECK_SHA224:
+      switch (tst.digest) {
+      case TEST_DIGEST_SHA224:
 	SHA224_Init(&tst.ctx.sha224);
 	break;
 	
-      case CHECK_SHA256:
+      case TEST_DIGEST_SHA256:
 	SHA256_Init(&tst.ctx.sha256);
 	break;
 	
-      case CHECK_SHA512:
+      case TEST_DIGEST_SHA512:
 	SHA512_Init(&tst.ctx.sha512);
 	break;
       }
 
       rc = (*tstfun)(&tst);
   
-      switch (tst.checksum) {
-      case CHECK_SHA224:
+      switch (tst.digest) {
+      case TEST_DIGEST_SHA224:
 	SHA224_Final(digest, &tst.ctx.sha224);
 
 	if (pass == tst.passes) {
-	  printf("SHA224 Digest:");
-	  p_buffer(stdout, digest, 32, 1);
+	  printf("SHA224 Digest:\n");
+	  buf_print(stdout, digest, 32, 1);
 	}
 	
 	if (pass == 1)
@@ -1910,12 +2124,12 @@ main(int argc,
 	}
 	break;
 	
-      case CHECK_SHA256:
+      case TEST_DIGEST_SHA256:
 	SHA256_Final(digest, &tst.ctx.sha256);
 
 	if (pass == tst.passes) {
-	  printf("SHA256 Digest:");
-	  p_buffer(stdout, digest, 32, 1);
+	  printf("SHA256 Digest:\n");
+	  buf_print(stdout, digest, 32, 1);
 	}
 	
 	if (pass == 1)
@@ -1928,12 +2142,12 @@ main(int argc,
 	}
 	break;
 	
-      case CHECK_SHA512:
+      case TEST_DIGEST_SHA512:
 	SHA512_Final(digest, &tst.ctx.sha512);
 	
 	if (pass == tst.passes) {
-	  printf("SHA512 Digest:");
-	  p_buffer(stdout, digest, 64, 1);
+	  printf("SHA512 Digest:\n");
+	  buf_print(stdout, digest, 64, 1);
 	}
 
 	if (pass == 1)
@@ -1949,8 +2163,8 @@ main(int argc,
     }
     
     if (f_print) {
-      printf("Last Data Block (%lu bytes @ %lu):", tst.b_last, tst.pos-tst.b_last);
-      p_buffer(stdout, tst.rbuf, tst.b_last, 2);
+      printf("Last Data Block (%lu bytes):\n", tst.b_size);
+      buf_print(stdout, tst.rbuf, tst.b_size, 3);
     }
   }
   
