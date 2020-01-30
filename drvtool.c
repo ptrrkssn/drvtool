@@ -57,7 +57,7 @@
 
 
 char *argv0 = "drvtool";
-char *version = "1.1";
+char *version = "1.2";
 
 long f_update_freq = 500;
 
@@ -72,6 +72,7 @@ int f_print = 0;
 
 int d_passes = 1;
 BLOCKS *d_blocks = NULL;
+off_t max_blocks = 0;
 
 
 PATTERN sel_pattern =
@@ -214,14 +215,14 @@ blocks_create(off_t s) {
   if (!bp)
     return NULL;
 
-  bp->s = 0;
-  bp->v = calloc(s, sizeof(bp->v[0]));
-  if (bp->v == NULL)
+  bp->s = (max_blocks && s > max_blocks) ?  max_blocks : s;
+  bp->v = calloc(bp->s, sizeof(bp->v[0]));
+  if (bp->v == NULL) {
+    free(bp);
     return NULL;
+  }
 
-  bp->s = s;
-
-  for (i = 0; i < s; i++)
+  for (i = 0; i < bp->s; i++)
     bp->v[i] = i;
 
   return bp;
@@ -937,8 +938,7 @@ dev_print(FILE *fp,
   
   fprintf(fp, "%-6s", dp->name);
 
-  if (dp->ident && dp->ident[0])
-    fprintf(fp, " : %-20s", dp->ident);
+  fprintf(fp, " : %-20s", dp->ident ? dp->ident : "");
 
   int2str(dp->stripe_size, b1, sizeof(b1), 2);
   strcat(b1, "n");
@@ -1202,7 +1202,8 @@ void
 test_pstatus(FILE *fp,
 	     TEST *tp,
 	     struct timespec *now,
-	     off_t bno) {
+	     off_t bno,
+	     off_t real_bno) {
   long time_left;
   off_t bytes_done, bytes_left, bytes_total, bytes_rate_avg, bytes_done_pct;
   char ibuf[256], tbuf[256], pbuf[256];
@@ -1221,8 +1222,12 @@ test_pstatus(FILE *fp,
   else
     time_left = bytes_rate_avg ? bytes_left / bytes_rate_avg : 0;
   
-  fprintf(fp, "    %15ld : %7sB @ %5sB/s : %4ld%% done",
-	  bno, 
+  fprintf(fp, "    %15ld",
+	  bno);
+  if (f_verbose)
+    fprintf(fp, " : %15ld",
+	    real_bno);
+  fprintf(fp, " : %7sB @ %5sB/s : %4ld%% done",
 	  int2str(bytes_done, pbuf, sizeof(pbuf), 0),
 	  int2str(bytes_rate_avg, ibuf, sizeof(ibuf), 0),
 	  bytes_done_pct);
@@ -1302,9 +1307,11 @@ test_seq(TEST *tp) {
 
   for (b = 0; b < tp->b_length && (!tp->t_max || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->t_max); ++b) {
 
-    if (tp->blocks && b < tp->blocks->s)
-      b_pos = tp->blocks->v[b];
-    else if (f_random)
+    if (tp->blocks) {
+      off_t b_offset = b / tp->blocks->s;
+      
+      b_pos = tp->blocks->v[b % tp->blocks->s] + b_offset * tp->blocks->s;
+    } else if (f_random)
       b_pos = orand(tp->b_length);
     else
       b_pos = b;
@@ -1569,7 +1576,7 @@ test_seq(TEST *tp) {
 	tp->t1 = now;
       }
 
-      test_pstatus(stderr, tp, &now, b);
+      test_pstatus(stderr, tp, &now, b, b_pos);
       fputc('\r', stderr);
     }
     
@@ -1577,7 +1584,7 @@ test_seq(TEST *tp) {
     tp->last_pos   = pos;
   }
   
-  test_pstatus(stderr, tp, &now, b);
+  test_pstatus(stderr, tp, &now, b, b_pos);
   fputc('\n', stderr);
   return 0;
 }
@@ -1667,6 +1674,7 @@ usage(FILE *fp) {
   fprintf(fp, "  -f               Flush device write buffer [NO]\n");
   fprintf(fp, "  -d               Enable sending TRIM commands to device [NO]\n");
   fprintf(fp, "  -p               Print last block [NO]\n");
+  fprintf(fp, "  -R <size>        Limit block-list size for Shuffled-Random order\n");
   fprintf(fp, "  -X <type>        Transform type (XOR, ROL, ROR) [NONE]\n");
   fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32, ADLER32, SHA256, SHA384, SHA512) [NONE]\n");
   fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
@@ -1819,7 +1827,7 @@ main(int argc,
   char *s_start = NULL;
   char *s_length = NULL;
   char *s_bsize = NULL;
-  
+  char *s_rsize = NULL;
   
   argv0 = argv[0];
 
@@ -1929,6 +1937,24 @@ main(int argc,
 	  s_bsize = argv[++i];
 	else {
 	  fprintf(stderr, "%s: Error: -B: Missing block size\n", argv0);
+	  exit(1);
+	}
+	goto NextArg;
+	
+      case 'R':
+	if (argv[i][j+1])
+	  s_rsize = argv[i]+j+1;
+	else if (argv[i+1])
+	  s_rsize = argv[++i];
+	else {
+	  fprintf(stderr, "%s: Error: -R: Missing max shuffle-array size\n", argv0);
+	  exit(1);
+	}
+	  
+	rc = str2off(s_rsize, &max_blocks, 0, NULL);
+	if (rc < 1) {
+	  fprintf(stderr, "%s: Error: %s: Invalid max shuffle-array size\n",
+		  argv0, s_rsize);
 	  exit(1);
 	}
 	goto NextArg;
@@ -2078,19 +2104,12 @@ main(int argc,
     blocks_shuffle(tst.blocks);
   }
   
-  if (f_verbose > 1) {
-    printf("Blocks:\n");
-    printf("  Size:   %lu\n", tst.b_size);
-    printf("  Start:  %ld\n", tst.b_start);
-    printf("  Length: %ld\n", tst.b_length);
-    printf("  End:    %ld\n", tst.b_end);
-    printf("Device:\n");
-    printf("  Sector Size:   %ld\n", tst.dev->sector_size);
-    printf("  Stripe Size:   %ld\n", tst.dev->stripe_size);
-    printf("  Stripe Offset: %ld\n", tst.dev->stripe_offset);
-    printf("  Front Stuff:   %ld\n", tst.dev->front_reserved);
-  }
-
+  if (f_verbose)
+    printf("Test Block Range: %ld - %ld (%ld blocks)\n\n",
+	   tst.b_start,
+	   tst.b_end-1,
+	   tst.b_length);
+  
   for (; i < argc; i++) {
     unsigned int pass;
     char tbuf[256], bbuf[256], sbuf[256];
