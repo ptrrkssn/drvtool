@@ -495,6 +495,91 @@ test_set_length(TEST *tp,
   return 0;
 }
 
+
+int
+digest_init(DIGEST *dp,
+	    int type) {
+  dp->type = type;
+
+  
+  memset(&dp->ctx, 0, sizeof(dp->ctx));
+  
+  switch (dp->type) {
+  case DIGEST_NONE:
+    break;
+    
+  case DIGEST_ADLER32:
+    dp->ctx.crc32 = adler32_z(0L, NULL, 0);
+    break;
+    
+  case DIGEST_CRC32:
+    dp->ctx.adler32 = crc32_z(0L, NULL, 0);
+    break;
+    
+  case DIGEST_MD5:
+    MD5Init(&dp->ctx.md5);
+    break;
+    
+  case DIGEST_SHA256:
+    SHA256_Init(&dp->ctx.sha256);
+    break;
+    
+  case DIGEST_SHA384:
+    SHA384_Init(&dp->ctx.sha384);
+    break;
+    
+  case DIGEST_SHA512:
+    SHA512_Init(&dp->ctx.sha512);
+    break;
+
+  default:
+    return -1;
+  }
+
+  return 0;
+}
+
+
+int
+digest_update(DIGEST *dp,
+	      unsigned char *buf,
+	      size_t bufsize) {
+
+  if (!dp)
+    return -1;
+  
+  switch (dp->type) {
+  case DIGEST_ADLER32:
+    dp->ctx.adler32 = adler32_z(dp->ctx.adler32, buf, bufsize);
+    break;
+    
+  case DIGEST_CRC32:
+    dp->ctx.adler32 = crc32_z(dp->ctx.crc32, buf, bufsize);
+    break;
+    
+  case DIGEST_MD5:
+    MD5Update(&dp->ctx.md5, buf, bufsize);
+    break;
+    
+  case DIGEST_SHA256:
+    SHA256_Update(&dp->ctx.sha256, buf, bufsize);
+    break;
+    
+  case DIGEST_SHA384:
+    SHA384_Update(&dp->ctx.sha384, buf, bufsize);
+    break;
+    
+  case DIGEST_SHA512:
+    SHA512_Update(&dp->ctx.sha512, buf, bufsize);
+    break;
+
+  default:
+    return -1;
+  }
+
+  return 0;
+}
+
 int
 test_init(TEST *tp,
 	  DRIVE *dp) {
@@ -506,7 +591,8 @@ test_init(TEST *tp,
   tp->passes  = f_passes;
   tp->timeout = f_timeout;
 
-  memset(&tp->digest, 0, sizeof(tp->digest));
+  tp->digest_type = DIGEST_NONE;
+  digest_init(&tp->digest, tp->digest_type);
   
   tp->transform = 0;
   
@@ -1329,7 +1415,6 @@ mem_verify(unsigned char *a,
 }
 
 
-
 /* Run a test sequence */
 int
 test_seq(TEST *tp) {
@@ -1582,32 +1667,8 @@ test_seq(TEST *tp) {
       
       if (tp->flags & TEST_VERIFY)
 	tbuf = tp->rbuf;
-      
-      switch (tp->digest.type) {
-      case TEST_DIGEST_ADLER32:
-	tp->digest.ctx.adler32 = adler32_z(tp->digest.ctx.adler32, tbuf, tp->b_size);
-	break;
-	
-      case TEST_DIGEST_CRC32:
-	tp->digest.ctx.adler32 = crc32_z(tp->digest.ctx.crc32, tbuf, tp->b_size);
-	break;
-	
-      case TEST_DIGEST_MD5:
-	MD5Update(&tp->digest.ctx.md5, tbuf, tp->b_size);
-	break;
-	
-      case TEST_DIGEST_SHA256:
-	SHA256_Update(&tp->digest.ctx.sha256, tbuf, tp->b_size);
-	break;
-	
-      case TEST_DIGEST_SHA384:
-	SHA384_Update(&tp->digest.ctx.sha384, tbuf, tp->b_size);
-	break;
-	
-      case TEST_DIGEST_SHA512:
-	SHA512_Update(&tp->digest.ctx.sha512, tbuf, tp->b_size);
-	break;
-      }
+
+      digest_update(&tp->digest, tbuf, tp->b_size);
     }
 
     bytes_done += tp->b_size;
@@ -1809,25 +1870,25 @@ prompt_yes(const char *msg,
 int
 str2digest(const char *s) {
   if (strcasecmp(s, "NONE") == 0)
-    return TEST_DIGEST_NONE;
+    return DIGEST_NONE;
   
   if (strcasecmp(s, "ADLER32") == 0 || strcasecmp(s, "ADLER-32") == 0)
-    return TEST_DIGEST_ADLER32;
+    return DIGEST_ADLER32;
 
   if (strcasecmp(s, "CRC32") == 0 || strcasecmp(s, "CRC-32") == 0)
-    return TEST_DIGEST_CRC32;
+    return DIGEST_CRC32;
 
   if (strcasecmp(s, "MD5") == 0 || strcasecmp(s, "MD-5") == 0)
-    return TEST_DIGEST_MD5;
+    return DIGEST_MD5;
 
   if (strcasecmp(s, "256") == 0 || strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
-    return TEST_DIGEST_SHA256;
+    return DIGEST_SHA256;
 
   if (strcasecmp(s, "384") == 0 || strcasecmp(s, "SHA384") == 0 || strcasecmp(s, "SHA-384") == 0)
-    return TEST_DIGEST_SHA384;
+    return DIGEST_SHA384;
 
   if (strcasecmp(s, "512") == 0 || strcasecmp(s, "SHA512") == 0 || strcasecmp(s, "SHA-512") == 0)
-    return TEST_DIGEST_SHA512;
+    return DIGEST_SHA512;
 
   return -1;
 }
@@ -1928,7 +1989,7 @@ test_print_config(FILE *fp,
     fprintf(fp, "  Number of passes:              %d\n", tp->passes);
   if (tp->timeout)
     fprintf(fp, "  Time limit:                    %lds\n", tp->timeout);
-  
+
 #if 0  
   fprintf(fp, "  Repair defective blocks?       %s\n", tp->flags.repair ? "Yes" : "No");
   fprintf(fp, "  Stop after first error?        %s\n", tp->flags.fail_fast ? "Yes" : "No");
@@ -1952,33 +2013,33 @@ int
 act_digest(FILE *fp,
 	   TEST *tp) {
   switch (tp->digest.type) {
-  case TEST_DIGEST_ADLER32:
-    printf("ADLER-32 DIGEST:\n  %08lX\n",
+  case DIGEST_ADLER32:
+    printf("ADLER32 DIGEST:\n  %08lX\n",
 	   tp->digest.ctx.adler32);
     break;
     
-  case TEST_DIGEST_CRC32:
-    printf("CRC-32 DIGEST:\n  %08lX\n",
+  case DIGEST_CRC32:
+    printf("CRC32 DIGEST:\n  %08lX\n",
 	   tp->digest.ctx.crc32);
     break;
     
-  case TEST_DIGEST_MD5:
-    printf("MD-5 DIGEST:\n");
+  case DIGEST_MD5:
+    printf("MD5 DIGEST:\n");
     buf_print(stdout, tp->digest.buffer.last.md5, 16, 1);
     break;
       
-  case TEST_DIGEST_SHA256:
-    printf("SHA-256 DIGEST:\n");
+  case DIGEST_SHA256:
+    printf("SHA256 DIGEST:\n");
     buf_print(stdout, tp->digest.buffer.last.sha256, 32, 1);
     break;
       
-  case TEST_DIGEST_SHA384:
-    printf("SHA-384 DIGEST:\n");
+  case DIGEST_SHA384:
+    printf("SHA384 DIGEST:\n");
     buf_print(stdout, tp->digest.buffer.last.sha384, 48, 1);
     break;
     
-  case TEST_DIGEST_SHA512:
-    printf("SHA-512 DIGEST:\n");
+  case DIGEST_SHA512:
+    printf("SHA512 DIGEST:\n");
     buf_print(stdout, tp->digest.buffer.last.sha512, 64, 1);
     break;
   }
@@ -2158,45 +2219,20 @@ test_action(TEST *tp,
     } else if (tp->passes > 1)
       printf("  Pass %u:\n", pass);
 
-    if (tp->digest.type) {
-      switch (tp->digest.type) {
-      case TEST_DIGEST_ADLER32:
-	tp->digest.ctx.crc32 = adler32_z(0L, NULL, 0);
-	break;
-	
-      case TEST_DIGEST_CRC32:
-	tp->digest.ctx.adler32 = crc32_z(0L, NULL, 0);
-	break;
-	
-      case TEST_DIGEST_MD5:
-	MD5Init(&tp->digest.ctx.md5);
-	break;
-	
-      case TEST_DIGEST_SHA256:
-	SHA256_Init(&tp->digest.ctx.sha256);
-	break;
-	
-      case TEST_DIGEST_SHA384:
-	SHA384_Init(&tp->digest.ctx.sha384);
-	break;
-	
-      case TEST_DIGEST_SHA512:
-	SHA512_Init(&tp->digest.ctx.sha512);
-	break;
-      }
-    }
+    if (tp->digest_type)
+      digest_init(&tp->digest, tp->digest_type);
     
     rc = (*tstfun)(tp);
 
     if (tp->digest.type) {
       switch (tp->digest.type) {
-      case TEST_DIGEST_ADLER32:
+      case DIGEST_ADLER32:
 	tp->digest.buffer.last.adler32 = tp->digest.ctx.adler32;
 	if (pass == 1)
 	  tp->digest.buffer.first.adler32 = tp->digest.ctx.adler32;
 	else {
 	  if (tp->digest.buffer.first.adler32 != tp->digest.buffer.last.adler32) {
-	    fprintf(stderr, "%s: Error: ADLER-32 Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
+	    fprintf(stderr, "%s: Error: ADLER32 Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
 		    argv0,
 		    tp->digest.buffer.first.adler32,
 		    pass,
@@ -2206,13 +2242,13 @@ test_action(TEST *tp,
 	}
 	break;
 	
-      case TEST_DIGEST_CRC32:
+      case DIGEST_CRC32:
 	tp->digest.buffer.last.crc32 = tp->digest.ctx.crc32;
 	if (pass == 1)
 	  tp->digest.buffer.first.crc32 = tp->digest.ctx.crc32;
 	else {
 	  if (tp->digest.buffer.first.crc32 != tp->digest.buffer.last.crc32) {
-	    fprintf(stderr, "%s: Error: CRC-32 Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
+	    fprintf(stderr, "%s: Error: CRC32 Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
 		    argv0,
 		    tp->digest.buffer.first.crc32,
 		    pass,
@@ -2222,7 +2258,7 @@ test_action(TEST *tp,
 	}
 	break;
 	
-      case TEST_DIGEST_MD5:
+      case DIGEST_MD5:
 	MD5Final(tp->digest.buffer.last.md5, &tp->digest.ctx.md5);
 	if (pass == 1)
 	  memcpy(tp->digest.buffer.first.md5,
@@ -2232,13 +2268,13 @@ test_action(TEST *tp,
 	  if (memcmp(tp->digest.buffer.first.md5,
 		     tp->digest.buffer.last.md5,
 		     sizeof(tp->digest.buffer.first.md5)) != 0) {
-	    fprintf(stderr, "%s: Error: MD-5 Digest mismatch between passes\n", argv0);
+	    fprintf(stderr, "%s: Error: MD5 Digest mismatch between passes\n", argv0);
 	    return 1;
 	  }
 	}
 	break;
 	
-      case TEST_DIGEST_SHA256:
+      case DIGEST_SHA256:
 	SHA256_Final(tp->digest.buffer.last.sha256, &tp->digest.ctx.sha256);
 	if (pass == 1)
 	  memcpy(tp->digest.buffer.first.sha256,
@@ -2248,13 +2284,13 @@ test_action(TEST *tp,
 	  if (memcmp(tp->digest.buffer.first.sha256,
 		     tp->digest.buffer.last.sha256,
 		     sizeof(tp->digest.buffer.first.sha256)) != 0) {
-	    fprintf(stderr, "%s: Error: SHA-256 Digest mismatch between passes\n", argv0);
+	    fprintf(stderr, "%s: Error: SHA256 Digest mismatch between passes\n", argv0);
 	    return 1;
 	  }
 	}
 	break;
 	
-      case TEST_DIGEST_SHA384:
+      case DIGEST_SHA384:
 	SHA384_Final(tp->digest.buffer.last.sha384, &tp->digest.ctx.sha384);
 	if (pass == 1)
 	  memcpy(tp->digest.buffer.first.sha384,
@@ -2264,13 +2300,13 @@ test_action(TEST *tp,
 	  if (memcmp(tp->digest.buffer.first.sha384,
 		     tp->digest.buffer.last.sha384,
 		     sizeof(tp->digest.buffer.first.sha384)) != 0) {
-	    fprintf(stderr, "%s: Error: SHA-384 Digest mismatch between passes\n", argv0);
+	    fprintf(stderr, "%s: Error: SHA384 Digest mismatch between passes\n", argv0);
 	    return 1;
 	  }
 	}
 	break;
 	
-      case TEST_DIGEST_SHA512:
+      case DIGEST_SHA512:
 	SHA512_Final(tp->digest.buffer.last.sha512, &tp->digest.ctx.sha512);
 	if (pass == 1)
 	  memcpy(tp->digest.buffer.first.sha512,
@@ -2280,7 +2316,7 @@ test_action(TEST *tp,
 	  if (memcmp(tp->digest.buffer.first.sha512,
 		     tp->digest.buffer.last.sha512,
 		     sizeof(tp->digest.buffer.first.sha512)) != 0) {
-	    fprintf(stderr, "%s: Error: SHA-512 Digest mismatch between passes\n", argv0);
+	    fprintf(stderr, "%s: Error: SHA512 Digest mismatch between passes\n", argv0);
 	    return 1;
 	  }
 	}
@@ -2551,8 +2587,8 @@ main(int argc,
   }
   
   if (s_digest) {
-    tst.digest.type = str2digest(s_digest);
-    if (tst.digest.type < 0) {
+    tst.digest_type = str2digest(s_digest);
+    if (tst.digest_type < 0) {
       fprintf(stderr, "%s: Error: %s: Invalid digest type\n",
 	      argv0, s_digest);
       exit(1);
