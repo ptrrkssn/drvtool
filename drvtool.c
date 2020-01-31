@@ -57,7 +57,7 @@
 
 
 char *argv0 = "drvtool";
-char *version = "1.2";
+char *version = "1.3";
 
 long f_update_freq = 500;
 
@@ -67,7 +67,7 @@ int f_flush = 0;
 int f_delete = 0;
 int f_update = 0;
 int f_verbose = 0;
-int f_random = 0;
+int f_reverse = 0;
 int f_print = 0;
 
 int d_passes = 1;
@@ -215,28 +215,22 @@ blocks_create(off_t s) {
   if (!bp)
     return NULL;
 
-  bp->s = (max_blocks && s > max_blocks) ?  max_blocks : s;
-  bp->v = calloc(bp->s, sizeof(bp->v[0]));
-  if (bp->v == NULL) {
-    free(bp);
-    return NULL;
-  }
-
-  for (i = 0; i < bp->s; i++)
-    bp->v[i] = i;
-
+  bp->s = s;
+  if (s) {
+    bp->v = calloc(bp->s, sizeof(bp->v[0]));
+    if (bp->v == NULL) {
+      free(bp);
+      return NULL;
+    }
+    
+    for (i = 0; i < bp->s; i++)
+      bp->v[i] = i;
+  } else
+    bp->v = NULL;
+  
   return bp;
 }
 
-
-static inline void
-off_swap(off_t *a,
-	 off_t *b) {
-  off_t t = *a;
-  
-  *a = *b;
-  *b = t;
-}
 
 off_t
 orand(off_t size) {
@@ -244,6 +238,22 @@ orand(off_t size) {
 
   r = (((off_t) lrand48() << 31) | ((off_t) lrand48() << 31)) | lrand48();
   return r % size;
+}
+
+
+static inline void
+off_swap(off_t *a,
+	 off_t *b) {
+#if 0
+  off_t t = *a;
+  
+  *a = *b;
+  *b = t;
+#else
+  *a ^= *b;    /* a^b b */
+  *b ^= *a;    /* a^b a */
+  *a ^= *b;    /* b   a */ 
+#endif
 }
 
 
@@ -1308,14 +1318,17 @@ test_seq(TEST *tp) {
   for (b = 0; b < tp->b_length && (!tp->t_max || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->t_max); ++b) {
 
     if (tp->blocks) {
-      off_t b_offset = b / tp->blocks->s;
-      
-      b_pos = tp->blocks->v[b % tp->blocks->s] + b_offset * tp->blocks->s;
-    } else if (f_random)
-      b_pos = orand(tp->b_length);
-    else
+      if (tp->blocks->s) {
+	off_t b_offset = b / tp->blocks->s;
+	b_pos = tp->blocks->v[b % tp->blocks->s] + b_offset * tp->blocks->s;
+      } else
+	b_pos = orand(tp->b_length);
+    } else
       b_pos = b;
 
+    if (f_reverse)
+      b_pos = tp->b_length - b_pos - 1;
+    
     b_pos += tp->b_start;
     pos = b_pos * tp->b_size;
 
@@ -1667,14 +1680,14 @@ usage(FILE *fp) {
   fprintf(fp, "\nOptions:\n");
   fprintf(fp, "  -h               Display this information\n");
   fprintf(fp, "  -V               Print program verson and exit\n");
-  fprintf(fp, "  -v               Increase verbosity [NO]\n");
-  fprintf(fp, "  -w               Open device in R/W mode (needed for write tests) [RO]\n");
-  fprintf(fp, "  -y               Answer yes to all questions [NO]\n");
-  fprintf(fp, "  -r               Random block order (-rr for shuffled order) [NO]\n");
-  fprintf(fp, "  -f               Flush device write buffer [NO]\n");
-  fprintf(fp, "  -d               Enable sending TRIM commands to device [NO]\n");
-  fprintf(fp, "  -p               Print last block [NO]\n");
-  fprintf(fp, "  -R <size>        Limit block-list size for Shuffled-Random order\n");
+  fprintf(fp, "  -v               Increase verbosity\n");
+  fprintf(fp, "  -w               Open device in R/W mode (needed for write tests)\n");
+  fprintf(fp, "  -y               Answer yes to all questions\n");
+  fprintf(fp, "  -r               Reverse block order\n");
+  fprintf(fp, "  -f               Flush device write buffer\n");
+  fprintf(fp, "  -d               Enable sending TRIM commands to device\n");
+  fprintf(fp, "  -p               Print last block\n");
+  fprintf(fp, "  -R <size>        Enable Shuffled (size of deck)/Random (size 0) order\n");
   fprintf(fp, "  -X <type>        Transform type (XOR, ROL, ROR) [NONE]\n");
   fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32, ADLER32, SHA256, SHA384, SHA512) [NONE]\n");
   fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
@@ -1741,6 +1754,9 @@ prompt_yes(const char *msg,
 
 int
 str2digest(const char *s) {
+  if (strcasecmp(s, "NONE") == 0)
+    return TEST_DIGEST_NONE;
+  
   if (strcasecmp(s, "ADLER32") == 0 || strcasecmp(s, "ADLER-32") == 0)
     return TEST_DIGEST_ADLER32;
 
@@ -1764,6 +1780,9 @@ int
 str2transform(const char *s,
 	      union transform_txd *d) {
   int v;
+
+  if (strcasecmp(s, "NONE") == 0)
+    return TEST_TRANSFORM_NONE;
   
   if (strncasecmp(s, "XOR", 3) == 0) {
     s += 3;
@@ -1856,7 +1875,7 @@ main(int argc,
 	exit(0);
 
       case 'r':
-	++f_random;
+	++f_reverse;
 	break;
 
       case 'f':
@@ -1948,13 +1967,6 @@ main(int argc,
 	  s_rsize = argv[++i];
 	else {
 	  fprintf(stderr, "%s: Error: -R: Missing max shuffle-array size\n", argv0);
-	  exit(1);
-	}
-	  
-	rc = str2off(s_rsize, &max_blocks, 0, NULL);
-	if (rc < 1) {
-	  fprintf(stderr, "%s: Error: %s: Invalid max shuffle-array size\n",
-		  argv0, s_rsize);
 	  exit(1);
 	}
 	goto NextArg;
@@ -2096,11 +2108,18 @@ main(int argc,
       exit(1);
     }
   }
-  
-  if (f_random > 1) {
-    if (!tst.blocks)
-      tst.blocks = blocks_create(tst.b_length);
-    
+
+  if (s_rsize) {
+    off_t v = 0;
+
+    rc = str2off(s_rsize, &v, 0, NULL);
+    if (rc < 1) {
+      fprintf(stderr, "%s: Error: %s: Invalid shuffle-array size\n",
+	      argv0, s_rsize);
+      exit(1);
+    }
+
+    tst.blocks = blocks_create(v);
     blocks_shuffle(tst.blocks);
   }
   
@@ -2231,7 +2250,7 @@ main(int argc,
     }
     
     printf("%s %s Test (%sB / %s blocks @ %sB):\n",
-	   f_random ? (f_random > 1 ? "Shuffled" : "Random") : "Sequential",
+	   tst.blocks ? (tst.blocks->s ? "Shuffled" : "Random") : "Sequential",
 	   tstname,
 	   int2str(bytes,  tbuf, sizeof(tbuf), 0),
 	   int2str(blocks, bbuf, sizeof(bbuf), 0),

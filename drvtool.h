@@ -14,19 +14,20 @@ typedef struct {
 typedef unsigned char PATTERN[4];
 
 
+#define TEST_DIGEST_NONE    0
 #define TEST_DIGEST_SHA256  1
 #define TEST_DIGEST_SHA384  2
 #define TEST_DIGEST_SHA512  3
-
 #define TEST_DIGEST_ADLER32 4
 #define TEST_DIGEST_CRC32   5
 
+#define TEST_TRANSFORM_NONE 0
 #define TEST_TRANSFORM_XOR  1
 #define TEST_TRANSFORM_ROR  2
 #define TEST_TRANSFORM_ROL  3
 
 
-#define RATE_BUF_SIZE 10
+#define RATE_BUF_SIZE 16
 
 typedef struct {
   unsigned int f;
