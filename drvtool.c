@@ -41,17 +41,10 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/disk.h>
-#include <sys/stat.h>
 #include <sys/errno.h>
-#include <sha256.h>
-#include <sha384.h>
-#include <sha512.h>
 #include <sys/sysctl.h>
 #include <camlib.h>
 #include <zlib.h>
-#if 0
-#include <geom/geom_disk.h>
-#endif
 
 #include "drvtool.h"
 
@@ -61,16 +54,17 @@ char *version = "1.3";
 
 long f_update_freq = 500;
 
-int f_yes = 0;
-int f_ibase = 0;
-int f_flush = 0;
-int f_delete = 0;
-int f_update = 0;
-int f_verbose = 0;
-int f_reverse = 0;
-int f_print = 0;
+int f_yes        = 0;
+int f_ibase      = 0;
+int f_flush      = 0;
+int f_delete     = 0;
+int f_update     = 0;
+int f_verbose    = 0;
+int f_reverse    = 0;
 
-int d_passes = 1;
+int f_passes     = 2; /* loops, 0 = loop continously (forever, or until timeout*/
+time_t f_timeout = 0; /* seconds, 0 = no time limit */
+
 BLOCKS *d_blocks = NULL;
 off_t max_blocks = 0;
 
@@ -101,8 +95,7 @@ PATTERN purge_patterns[NUM_PURGE_PATTERNS] =
   };
 
 
-DISK *disks = NULL;
-
+DRIVE *drives = NULL;
 
 void
 buf_xor(unsigned char *buf,
@@ -250,9 +243,9 @@ off_swap(off_t *a,
   *a = *b;
   *b = t;
 #else
-  *a ^= *b;    /* a^b b */
-  *b ^= *a;    /* a^b a */
-  *a ^= *b;    /* b   a */ 
+  *a ^= *b;
+  *b ^= *a;
+  *a ^= *b;
 #endif
 }
 
@@ -274,7 +267,7 @@ blocks_shuffle(BLOCKS *bp) {
 
 
 int
-dev_cam_sysctl(DEVICE *dp,
+drive_cam_sysctl(DRIVE *dp,
 	       const char *vname,
 	       void *vp,
 	       size_t *vs) {
@@ -299,7 +292,7 @@ dev_cam_sysctl(DEVICE *dp,
 }
 
 int
-dev_geom_sysctl(DEVICE *dp,
+drive_geom_sysctl(DRIVE *dp,
 		const char *vname,
 		void *vp,
 		size_t *vs) {
@@ -422,14 +415,14 @@ rate_update(RATE *rp,
 int
 test_set_bsize(TEST *tp,
 	       off_t bsize) {
-  DEVICE *dev;
+  DRIVE *dev;
   off_t ns, tb, o_start, o_length;
 
   
-  if (!tp || !tp->dev)
+  if (!tp || !tp->drive)
     return -1;
 
-  dev = tp->dev;
+  dev = tp->drive;
 
   o_start = tp->b_start * tp->b_size;
   o_length = tp->b_length * tp->b_size;
@@ -465,7 +458,7 @@ test_set_bsize(TEST *tp,
 int
 test_set_start(TEST *tp,
 	       off_t start) {
-  if (!tp || !tp->dev)
+  if (!tp || !tp->drive)
     return -1;
 
   if (start < 0 || start >= tp->b_total)
@@ -485,7 +478,7 @@ test_set_start(TEST *tp,
 int
 test_set_length(TEST *tp,
 		off_t length) {
-  if (!tp || !tp->dev)
+  if (!tp || !tp->drive)
     return -1;
 
   /* Negative length -> Count from end of disk */
@@ -503,16 +496,17 @@ test_set_length(TEST *tp,
 
 int
 test_init(TEST *tp,
-	  DEVICE *dp) {
-  tp->dev = dp;
+	  DRIVE *dp) {
+  tp->drive = dp;
   
   rate_init(&tp->rate);
 
-  tp->flags  = 0;
-  tp->passes = d_passes;
-  tp->t_max  = 0;
+  tp->flags   = 0;
+  tp->passes  = f_passes;
+  tp->timeout = f_timeout;
 
-  tp->digest    = 0;
+  memset(&tp->digest, 0, sizeof(tp->digest));
+  
   tp->transform = 0;
   
   tp->b_size  = dp->stripe_size;
@@ -536,6 +530,10 @@ test_init(TEST *tp,
     return -1;
 
   tp->blocks = d_blocks;
+
+  tp->last_b_pos = 0;
+  tp->last_pos = 0;
+  
   return 0;
 }
 
@@ -644,7 +642,7 @@ str2bytes(const char *str,
 	  int b1024,
 	  TEST *tp) {
   const char *rest = NULL;
-  DEVICE *dp = tp->dev;
+  DRIVE *dp = tp->drive;
   int rc;
   off_t v;
   
@@ -876,7 +874,7 @@ time2str(time_t t,
 
 
 int
-dev_flush(DEVICE *dp) {
+drive_flush(DRIVE *dp) {
   int rc;
 
 
@@ -886,7 +884,7 @@ dev_flush(DEVICE *dp) {
 
 
 int
-dev_delete(DEVICE *dp,
+drive_delete(DRIVE *dp,
 	   off_t off,
 	   off_t len) {
   int rc;
@@ -900,7 +898,7 @@ dev_delete(DEVICE *dp,
 }
 
 int
-dev_close(DEVICE *dp) {
+drive_close(DRIVE *dp) {
   int rc;
 
   
@@ -935,19 +933,18 @@ dev_close(DEVICE *dp) {
 }
 
 void
-dev_print(FILE *fp,
+drive_print(FILE *fp,
 	  int idx,
-	  DEVICE *dp) {
+	  DRIVE *dp) {
   char b1[80], b2[80], b3[80];
   
 
   if (idx)
     fprintf(fp, "  %4d.\t", idx);
   else
-    fprintf(fp, "\t");
+    fprintf(fp, "  ");
   
   fprintf(fp, "%-6s", dp->name);
-
   fprintf(fp, " : %-20s", dp->ident ? dp->ident : "");
 
   int2str(dp->stripe_size, b1, sizeof(b1), 2);
@@ -969,15 +966,16 @@ dev_print(FILE *fp,
   
   if (dp->flags.is_ssd)
     fprintf(fp, " SSD");
-#if 0
-  if (dp->flags.is_open)
-    fprintf(fp, " IN-USE");
-#endif
   
   putc('\n', fp);
 
   if (f_verbose) {
-    putc('\t', fp);
+    if (idx)
+      putc('\t', fp);
+    else {
+      putc(' ', fp);
+      putc(' ', fp);
+    }
     
     if (dp->cam.path)
       fprintf(fp, "%s ", dp->cam.path);
@@ -999,19 +997,15 @@ dev_print(FILE *fp,
 
 
 
-DEVICE *
-dev_open(const char *name) {
+DRIVE *
+drive_open(const char *name) {
   char pnbuf[MAXPATHLEN];
   char idbuf[DISK_IDENT_SIZE];
   int s_errno;
-  DEVICE *dp;
+  DRIVE *dp;
   int is_rotating = -1;
   size_t isrs = sizeof(is_rotating);
   struct cam_device *cam;
-#if 0
-  u_int geom_flags;
-  char gbuf[256];
-#endif
   
   dp = malloc(sizeof(*dp));
   if (!dp)
@@ -1033,17 +1027,9 @@ dev_open(const char *name) {
   else
     dp->path = strxdup("/dev/", name, NULL);
 
-  dev_cam_sysctl(dp, "rotating", &is_rotating, &isrs);
+  drive_cam_sysctl(dp, "rotating", &is_rotating, &isrs);
   dp->flags.is_ssd = (is_rotating ? 0 : 1);
 
-#if 0
-  geom_flags = 0;
-  isrs = sizeof(gbuf);
-  dev_geom_sysctl(dp, "flags", gbuf, &isrs);
-  if (sscanf(gbuf, "%02x", &geom_flags) == 1) 
-    dp->flags.is_open = (geom_flags & 0x0002) ? 1 : 0;
-#endif
-  
   dp->fd = open(dp->path, (f_update ? O_RDWR : O_RDONLY), 0);
   if (dp->fd < 0)
     goto Fail;
@@ -1125,18 +1111,21 @@ dev_open(const char *name) {
   if (cam) {
     char buf[256];
     
-    snprintf(buf, sizeof(buf), "%s%u bus %u scbus %u target %u lun %lu",
+    snprintf(buf, sizeof(buf), "/%s%u/bus%u/scbus%u/target%u/lun%lu",
 	     cam->sim_name, cam->sim_unit_number, cam->bus_id,
 	     cam->path_id, cam->target_id, cam->target_lun);
     dp->cam.path = strdup(buf);
     cam_close_device(cam);
   }
 
+  dp->next = drives;
+  drives = dp;
+  
   return dp;
 
  Fail:
   s_errno = errno;
-  dev_close(dp);
+  drive_close(dp);
   errno = s_errno;
   return NULL;
 }
@@ -1144,50 +1133,37 @@ dev_open(const char *name) {
 
 
 
-
 int
-disks_add(const char *name) {
-  DEVICE *dev;
-  DISK *dip;
-
-  
-  dev = dev_open(name);
-  if (!dev)
-    return -1;
-  
-  dip = malloc(sizeof(*dip));
-  if (!dip)
-    return -1;
-
-  dip->name = strdup(name);
-  dip->dev = dev;
-  
-  dip->next = disks;
-  disks = dip;
-
-  return 0;
-}
-
-
-int
-disks_load(void) {
+drives_load(void) {
   size_t bsize;
   char *buf;
   char *cp;
   
   
-  if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0)
+  if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0) {
+    fprintf(stderr, "%s: Error: Unable to get number of drives from kernel: %s\n",
+	    argv0, strerror(errno));
     return -1;
+  }
 
   buf = malloc(bsize);
-  if (!buf)
-    return -1;
+  if (!buf) {
+    fprintf(stderr, "%s: Error: malloc(%ld bytes) failed: %s\n",
+	    argv0, bsize, strerror(errno));
+    exit(1);
+  }
   
-  if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0)
-    return -1;
+  if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0) {
+    fprintf(stderr, "%s: Error: Unable to get list of drives from kernel: %s\n",
+	    argv0, strerror(errno));
+    exit(1);
+  }
 
   while ((cp = strsep(&buf, " ")) != NULL) {
-    disks_add(cp);
+    if (drive_open(cp) == NULL) {
+      fprintf(stderr, "%s: Error: %s: Invalid drives list\n", argv0, buf);
+      return -1;
+    }
   }
   
   return 0;
@@ -1195,16 +1171,65 @@ disks_load(void) {
 
 
 void
-disks_print(void) {
-  DISK *dip = disks;
+drives_print(int f_idx) {
+  DRIVE *dp = drives;
   int i = 0;
   
-  while (dip) {
-    dev_print(stdout, ++i, dip->dev);
-    dip = dip->next;
+  while (dp) {
+    drive_print(stdout, f_idx ? ++i : 0, dp);
+    dp = dp->next;
   }
 }
 
+char *
+strtrim(char *buf) {
+  int i;
+
+  
+  if (!buf)
+    return NULL;
+  
+  while (isspace(*buf))
+    ++buf;
+
+  i = strlen(buf);
+  while (i > 0 && isspace(buf[i-1]))
+    --i;
+  buf[i] = '\0';
+  return buf;
+}
+
+
+
+DRIVE *
+drive_select(const char *name) {
+  DRIVE *dp;
+  int i, d;
+  char buf[80];
+
+
+  do {
+    if (!name) {
+      fprintf(stderr, "Specify drive (enter it's number or name): ");
+      if (fgets(buf, sizeof(buf), stdin) == NULL)
+	exit(1);
+      name = strtrim(buf);
+    }
+    
+    if (sscanf(name, "%d", &d) == 1) {
+      i = 0;
+      for (dp = drives; dp && ++i != d; dp = dp->next)
+	;
+    } else {
+      for (dp = drives; dp && strcmp(name, dp->name) != 0; dp = dp->next)
+	;
+    }
+
+    name = NULL;
+  } while (!dp);
+
+  return dp;
+}
 
 
 
@@ -1227,8 +1252,8 @@ test_pstatus(FILE *fp,
   
   bytes_rate_avg = rate_get(&tp->rate);
 
-  if (tp->t_max)
-    time_left = tp->t_max - ts_delta(now, &tp->t0, NULL, NULL);
+  if (tp->timeout)
+    time_left = tp->timeout - ts_delta(now, &tp->t0, NULL, NULL);
   else
     time_left = bytes_rate_avg ? bytes_left / bytes_rate_avg : 0;
   
@@ -1260,27 +1285,26 @@ sigint_handler(int sig) {
 }
   
 
-
+#if 0
 int
-test_trim(TEST *tp) {
-  DEVICE *dp = tp->dev;
+do_drive_delete_all(DRIVE *dp) {
   int rc;
   off_t i;
+
   
-  for (i = tp->b_start; i < tp->b_end; i++) {
-    off_t pos = i * tp->b_size;
-    
-    rc = dev_delete(dp, pos, tp->b_size);
+  for (i = 0; i < dp->media_size; i += dp->delete_size) {
+    rc = drive_delete(dp, i, dp->delete_size);
     if (rc < 0) {
-      fprintf(stderr, "%s: Error: %s: TRIM %ld bytes @ %ld failed: %s\n",
-	      argv0, dp->path, tp->b_size, pos, strerror(errno));
+      fprintf(stderr, "%s: Error: %s: Drive Delete %ld bytes @ %ld failed: %s\n",
+	      argv0, dp->path, dp->delete_size, i, strerror(errno));
       exit(1);
     }
   }
 
   return 0;
 }
-  
+#endif
+
 
 /* Return number of equal bytes from the start */
 size_t
@@ -1301,7 +1325,7 @@ mem_verify(unsigned char *a,
 /* Run a test sequence */
 int
 test_seq(TEST *tp) {
-  DEVICE *dp = tp->dev;
+  DRIVE *dp = tp->drive;
   struct timespec now;
   ssize_t rc;
   off_t b, b_pos, pos, bytes_done;
@@ -1315,7 +1339,7 @@ test_seq(TEST *tp) {
   
   bytes_done = 0;
 
-  for (b = 0; b < tp->b_length && (!tp->t_max || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->t_max); ++b) {
+  for (b = 0; b < tp->b_length && (!tp->timeout || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->timeout); ++b) {
 
     if (tp->blocks) {
       if (tp->blocks->s) {
@@ -1359,7 +1383,7 @@ test_seq(TEST *tp) {
     }
     
     if (tp->flags & TEST_RESTORE)
-      /* Ignore Ctrl-C at this time in order to prevent data corruption */
+      /* Make sure we ignore Ctrl-C at this time in order to prevent data corruption */
       signal(SIGINT, sigint_handler);
     
     n_write = 1;
@@ -1419,7 +1443,7 @@ test_seq(TEST *tp) {
       if (f_flush || (tp->flags & TEST_FLUSH)) {
 	/* Force device to write out data to permanent storage */
 	
-	rc = dev_flush(dp);
+	rc = drive_flush(dp);
 	if (rc < 0) {
 	  fprintf(stderr, "%s: Error: %s: FLUSH failed @ block %ld (offset %ld): %s\n",
 		  argv0, dp->path, b_pos, pos, strerror(errno));
@@ -1468,7 +1492,7 @@ test_seq(TEST *tp) {
     if (f_delete && (tp->flags & TEST_DELETE)) {
       /* TRIM block from (SSD) device */
       
-      rc = dev_delete(dp, pos, tp->b_size);
+      rc = drive_delete(dp, pos, tp->b_size);
       if (rc < 0) {
 	fprintf(stderr, "%s: Error: %s: TRIM failed @ block %ld (offset %ld): %s\n",
 		argv0, dp->path, b_pos, pos, strerror(errno));
@@ -1542,7 +1566,7 @@ test_seq(TEST *tp) {
       exit(1);
     }
       
-    if (tp->digest) {
+    if (tp->digest.type) {
       unsigned char *tbuf = tp->obuf;
       
       if (tp->flags & TEST_WRITE)
@@ -1551,25 +1575,29 @@ test_seq(TEST *tp) {
       if (tp->flags & TEST_VERIFY)
 	tbuf = tp->rbuf;
       
-      switch (tp->digest) {
+      switch (tp->digest.type) {
       case TEST_DIGEST_ADLER32:
-	tp->ctx.adler32 = adler32_z(tp->ctx.adler32, tbuf, tp->b_size);
+	tp->digest.ctx.adler32 = adler32_z(tp->digest.ctx.adler32, tbuf, tp->b_size);
 	break;
 	
       case TEST_DIGEST_CRC32:
-	tp->ctx.adler32 = crc32_z(tp->ctx.adler32, tbuf, tp->b_size);
+	tp->digest.ctx.adler32 = crc32_z(tp->digest.ctx.crc32, tbuf, tp->b_size);
+	break;
+	
+      case TEST_DIGEST_MD5:
+	MD5Update(&tp->digest.ctx.md5, tbuf, tp->b_size);
 	break;
 	
       case TEST_DIGEST_SHA256:
-	SHA256_Update(&tp->ctx.sha256, tbuf, tp->b_size);
+	SHA256_Update(&tp->digest.ctx.sha256, tbuf, tp->b_size);
 	break;
 	
       case TEST_DIGEST_SHA384:
-	SHA384_Update(&tp->ctx.sha384, tbuf, tp->b_size);
+	SHA384_Update(&tp->digest.ctx.sha384, tbuf, tp->b_size);
 	break;
 	
       case TEST_DIGEST_SHA512:
-	SHA512_Update(&tp->ctx.sha512, tbuf, tp->b_size);
+	SHA512_Update(&tp->digest.ctx.sha512, tbuf, tp->b_size);
 	break;
       }
     }
@@ -1673,11 +1701,42 @@ buf_print(FILE *fp,
 
 
 void
+act_help(FILE *fp) {
+  fprintf(fp, "COMMANDS:\n");
+  fprintf(fp, "  drive            Select new drive\n");
+  fprintf(fp, "  current          Describe current drive\n");
+  
+  fprintf(fp, "  read             Read-only test [doesn't harm OS]\n");
+  fprintf(fp, "  refresh          Read+Rewrite test [doesn't harm data]\n");
+  fprintf(fp, "  verify           Read+Rewrite+Read test [doesn't harm data]\n");
+  fprintf(fp, "  test             Read+Write+Read+Restore pattern test [doesn't harm data]\n");
+  fprintf(fp, "  write            Write-only pattern test [corrupts data]\n");
+  fprintf(fp, "  compare          Write+Read pattern test [corrupts data]\n");
+  fprintf(fp, "  purge            Multi-pass Write+Read NCSC-TG-025/DoD 5220.22-M purge [corrupts data]\n");
+  fprintf(fp, "  delete           Send drive DELETE/TRIM commands [corrupts data]\n");
+
+  fprintf(fp, "  digest           Display last calculated digest (if enabled)\n");
+  fprintf(fp, "  print            Print last block buffer\n");
+  
+  fprintf(fp, "  exit             Quit this program\n");
+  fprintf(fp, "  !<cmd>           Execute <cmd> shell command\n");
+  fprintf(fp, "  #<text>          Comment (ignored)\n");
+  
+  fprintf(fp, "\nNOTES:\n");
+  fprintf(fp, "  - Beware of using any of the write tests on SSD devices. Due\n");
+  fprintf(fp, "    to the way they operate (with remapping of blocks for wear levelling)\n");
+  fprintf(fp, "    you will not test what you intend and instead just make them fail faster.\n\n");
+  fprintf(fp, "  - Beware that the Shuffle (-R with size > 0) option allocates a lot of RAM,\n");
+  fprintf(fp, "    typically 8 bytes times the number of blocks of the device. One the other hand\n");
+  fprintf(fp, "    it guarantees that all blocks in the requested range will be visited.\n");
+}
+
+void
 usage(FILE *fp) {
   fprintf(fp, "[drvtool, version %s, by Peter Eriksson <pen@lysator.liu.se>]\n\n", version);
-  fprintf(fp, "Usage:\n  %s [<options>] [<device> [<actions>]]\n",
+  fprintf(fp, "USAGE:\n  %s [<options>] [<device> [<commands>]]\n",
 	  argv0);
-  fprintf(fp, "\nOptions:\n");
+  fprintf(fp, "\nOPTIONS:\n");
   fprintf(fp, "  -h               Display this information\n");
   fprintf(fp, "  -V               Print program verson and exit\n");
   fprintf(fp, "  -v               Increase verbosity\n");
@@ -1686,31 +1745,16 @@ usage(FILE *fp) {
   fprintf(fp, "  -r               Reverse block order\n");
   fprintf(fp, "  -f               Flush device write buffer\n");
   fprintf(fp, "  -d               Enable sending TRIM commands to device\n");
-  fprintf(fp, "  -p               Print last block\n");
   fprintf(fp, "  -R <size>        Enable Shuffled (size of deck)/Random (size 0) order\n");
-  fprintf(fp, "  -X <type>        Transform type (XOR, ROL, ROR) [NONE]\n");
-  fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32, ADLER32, SHA256, SHA384, SHA512) [NONE]\n");
-  fprintf(fp, "  -T <time>        Test time limit [NONE]\n");
-  fprintf(fp, "  -P <num>         Number of passes [%d]\n", d_passes);
-  fprintf(fp, "  -S <pos>         Starting block offset [FIRST]\n");
+  fprintf(fp, "  -X <type>        Transform type (XOR,ROL,ROR) [NONE]\n");
+  fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32,ADLER32,MD5,SHA256,SHA384,SHA512) [NONE]\n");
+  fprintf(fp, "  -T <time>        Test timeout (0 = no limit) [%ld]\n",    f_timeout);
+  fprintf(fp, "  -P <num>         Number of passes (0 = no limit) [%d]\n", f_passes);
+  fprintf(fp, "  -S <pos>         Starting block offset [0]\n");
   fprintf(fp, "  -L <size>        Number of blocks [ALL]\n");
   fprintf(fp, "  -B <size>        Block size [NATIVE]\n");
-  fprintf(fp, "\nActions:\n");
-  fprintf(fp, "  read             Read-only test [doesn't harm OS]\n");
-  fprintf(fp, "  refresh          Read+Rewrite test [doesn't harm data]\n");
-  fprintf(fp, "  verify           Read+Rewrite+Read test [doesn't harm data]\n");
-  fprintf(fp, "  test             Read+Write+Read+Restore pattern test [doesn't harm data]\n");
-  fprintf(fp, "  write            Write-only pattern test [corrupts data]\n");
-  fprintf(fp, "  compare          Write+Read pattern test [corrupts data]\n");
-  fprintf(fp, "  purge            Multi-pass Write+Read NCSC-TG-025/DoD 5220.22-M purge [corrupts data]\n");
-  fprintf(fp, "  delete           Send device TRIM commands [corrupts data]\n");
-  fprintf(fp, "\nNotes:\n");
-  fprintf(fp, "  - Beware of using any of the write tests on SSD devices. Due\n");
-  fprintf(fp, "    to the way they operate (with remapping of blocks for wear levelling)\n");
-  fprintf(fp, "    you will not test what you intend and instead just make them fail faster.\n");
-  fprintf(fp, "  - Beware that the Shuffle (-R with size > 0) option allocates a lot of RAM,\n");
-  fprintf(fp, "    typically 8 bytes times the number of blocks of the device. One the other hand\n");
-  fprintf(fp, "    it guarantees that all blocks in the requested range will be visited.\n");
+  putc('\n', fp);
+  act_help(fp);
 }
 
 
@@ -1762,6 +1806,9 @@ str2digest(const char *s) {
 
   if (strcasecmp(s, "CRC32") == 0 || strcasecmp(s, "CRC-32") == 0)
     return TEST_DIGEST_CRC32;
+
+  if (strcasecmp(s, "MD5") == 0 || strcasecmp(s, "MD-5") == 0)
+    return TEST_DIGEST_MD5;
 
   if (strcasecmp(s, "256") == 0 || strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
     return TEST_DIGEST_SHA256;
@@ -1827,17 +1874,418 @@ str2transform(const char *s,
 }
 
 
+int
+act_print(FILE *fp,
+	  TEST *tp) {
+  char b1[80], b2[80];
+  
+  fprintf(fp, "DATA BUFFER @ block %ld (offset %sB) size %sB:\n",
+	  tp->last_b_pos,
+	  int2str(tp->last_pos, b1, sizeof(b1), 0),
+	  int2str(tp->b_size, b2, sizeof(b2), 0));
+  
+  buf_print(fp, tp->rbuf, tp->b_size, 3);
+  return 0;
+}
+
+
+int
+test_print_config(FILE *fp,
+		  TEST *tp) {
+  char buf[80];
+
+  
+  fprintf(fp, "TEST CONFIGURATION:\n");
+
+  fprintf(fp, "  Analyze entire drive?          %s\n", tp->b_length == tp->b_total ? "Yes" : "No");
+  if (tp->b_length != tp->b_total) {
+    fprintf(fp, "  Starting block number:         %ld\n", tp->b_start);
+    fprintf(fp, "  Ending block number:           %ld\n", tp->b_end-1);
+  }
+  
+  fprintf(fp, "  Number of blocks:              %ld (%sB)\n",
+	  tp->b_length,
+	  int2str(tp->b_length * tp->b_size, buf, sizeof(buf), 0));
+  
+  fprintf(fp, "  Loop continously?              %s\n", tp->passes == 0 && tp->timeout == 0 ? "Yes" : "No");
+  if (tp->passes)
+    fprintf(fp, "  Number of passes:              %d\n", tp->passes);
+  if (tp->timeout)
+    fprintf(fp, "  Time limit:                    %lds\n", tp->timeout);
+  
+#if 0  
+  fprintf(fp, "  Repair defective blocks?       %s\n", tp->flags.repair ? "Yes" : "No");
+  fprintf(fp, "  Stop after first error?        %s\n", tp->flags.fail_fast ? "Yes" : "No");
+  fprintf(fp, "  Use random bit patterns?       %s\n", tp->flags.random_patterns ? "Yes" : "No");
+#endif
+  
+  fprintf(fp, "  Number of sectors per block:   %ld (%sB)\n",
+	  tp->b_size / tp->drive->sector_size,
+	  int2str(tp->b_size, buf, sizeof(buf), 0));
+#if 0
+  fprintf(fp, "  Enable extended messages?      %s\n", tp->flags.verbose ? "Yes" : "No");
+  fprintf(fp, "  Restore defect list?           %s\n", tp->flags.restore_defects ? "Yes" : "No");
+  fprintf(fp, "  Restore disk label?            %s\n", tp->flags.restore_label ? "Yes" : "No");
+#endif
+
+  return 0;
+}
+
+
+int
+act_digest(FILE *fp,
+	   TEST *tp) {
+  switch (tp->digest.type) {
+  case TEST_DIGEST_ADLER32:
+    printf("ADLER-32 DIGEST:\n  %08lX\n",
+	   tp->digest.ctx.adler32);
+    break;
+    
+  case TEST_DIGEST_CRC32:
+    printf("CRC-32 DIGEST:\n  %08lX\n",
+	   tp->digest.ctx.crc32);
+    break;
+    
+  case TEST_DIGEST_MD5:
+    printf("MD-5 DIGEST:\n");
+    buf_print(stdout, tp->digest.buffer.last.md5, 16, 1);
+    break;
+      
+  case TEST_DIGEST_SHA256:
+    printf("SHA-256 DIGEST:\n");
+    buf_print(stdout, tp->digest.buffer.last.sha256, 32, 1);
+    break;
+      
+  case TEST_DIGEST_SHA384:
+    printf("SHA-384 DIGEST:\n");
+    buf_print(stdout, tp->digest.buffer.last.sha384, 48, 1);
+    break;
+    
+  case TEST_DIGEST_SHA512:
+    printf("SHA-512 DIGEST:\n");
+    buf_print(stdout, tp->digest.buffer.last.sha512, 64, 1);
+    break;
+  }
+
+  return 0;
+}
+
+
+int
+test_action(TEST *tp,
+	    const char *act,
+	    const char *arg) {
+  int (*tstfun)(TEST *tp);
+  unsigned int pass;
+  char tbuf[256], bbuf[256], sbuf[256];
+  char *tstname = "?";
+  off_t blocks = tp->b_length;
+  off_t bytes = blocks * tp->b_size;
+  int rc = -1;
+
+  
+  if (strcmp(act, "help") == 0 || strcmp(act, "?") == 0) {
+    
+    act_help(stdout);
+    return 0;
+    
+  } else if (strcmp(act, "config") == 0) {
+    
+    return test_print_config(stdout, tp);
+
+  } else if (strcmp(act, "print") == 0) {
+    
+    return act_print(stdout, tp);
+
+  } else if (strcmp(act, "current") == 0) {
+
+    drive_print(stdout, 0, tp->drive);
+    return 0;
+
+  } else if (strcmp(act, "digest") == 0) {
+
+    return act_digest(stdout, tp);
+
+  } else if (strcmp(act, "drive") == 0) {
+
+    tp->drive = drive_select(arg);
+    return 0;
+
+#if 0
+  } else if (strcmp(act, "trim") == 0) {
+    
+    rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
+		    tstname);
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      exit(0);
+    }
+    
+    test_trim;
+
+#endif
+  } else if (strcmp(act, "exit") == 0) {
+    int v = 0;
+    
+    if (arg)
+      sscanf(arg, "%d", &v);
+    exit(v);
+    
+  } else if (strcmp(act, "read") == 0) {
+    
+    tstname = "READ";
+    tp->rbuf = tp->obuf;
+    tp->wbuf = tp->obuf;
+    tp->flags = TEST_READ;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "refresh") == 0) {
+    
+    tstname = "REFRESH";
+    tp->wbuf = tp->obuf;
+    tp->rbuf = tp->wbuf;
+    tp->flags = TEST_READ|TEST_WRITE;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "verify") == 0) {
+    
+    tstname = "VERIFY";
+    tp->wbuf = tp->obuf;
+    tp->flags = TEST_READ|TEST_WRITE|TEST_VERIFY;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "pattern") == 0) {
+    
+    tstname = "PATTERN";
+    tp->flags = TEST_READ|TEST_PATTERN|TEST_WRITE|TEST_VERIFY|TEST_RESTORE;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "write") == 0) {
+    
+    tstname = "WRITE";
+    
+    rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
+		    tstname);
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      exit(0);
+    }
+    
+    tp->rbuf = tp->wbuf;
+    tp->flags = TEST_WRITE|TEST_PATTERN;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "compare") == 0) {
+    
+    tstname = "COMPARE";
+    
+    rc = prompt_yes("About to start %s. This will corrupt any data on the drive.\nContinue?",
+		    tstname);
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      return 1;
+    }
+    
+    tp->flags = TEST_WRITE|TEST_PATTERN|TEST_VERIFY;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "purge") == 0) {
+    
+    tstname = "PURGE";
+    
+    rc = prompt_yes("About to start %s. This will corrupt any data on the drive.\nContinue?",
+		    tstname);
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      return 1;
+    }
+    
+    tp->flags = TEST_WRITE|TEST_PURGE|TEST_VERIFY;
+    tstfun = test_seq;
+    
+  } else if (strcmp(act, "delete") == 0) {
+    
+    tstname = "DELETE";
+    
+    rc = prompt_yes("About to start %s. This will corrupt any data on the drive.\nContinue?",
+		    tstname);
+    if (rc != 1) {
+      fprintf(stderr, "*** Aborted ***\n");
+      return 1;
+    }
+    
+    tp->flags = TEST_DELETE;
+    tstfun = test_seq;
+    
+  }  else {
+    
+    fprintf(stderr, "%s: Error: %s: Invalid action\n", argv0, act);
+    return 1;
+    
+  }
+  
+  printf("%s %s TEST (%sB / %s blocks @ %sB):\n",
+	 tp->blocks ? (tp->blocks->s ? "SHUFFLED" : "RANDOM") : "SEQUENTIAL",
+	 tstname,
+	 int2str(bytes,  tbuf, sizeof(tbuf), 0),
+	 int2str(blocks, bbuf, sizeof(bbuf), 0),
+	 int2str(tp->b_size, sbuf, sizeof(sbuf), 1));
+  
+  for (pass = 1; !tp->passes || pass <= tp->passes; ++pass) {
+    if (tp->flags & TEST_PATTERN) {
+      memcpy(sel_pattern, test_patterns[(pass-1) % NUM_TEST_PATTERNS], sizeof(sel_pattern));
+	pattern_fill(tp->wbuf, tp->b_size, sel_pattern, sizeof(sel_pattern));
+	
+	printf("  Pass %u [", pass);
+	buf_print(stdout, sel_pattern, sizeof(sel_pattern), 0);
+	printf("]:\n");
+    } else if (tp->passes > 1)
+      printf("  Pass %u:\n", pass);
+
+    if (tp->digest.type) {
+      switch (tp->digest.type) {
+      case TEST_DIGEST_ADLER32:
+	tp->digest.ctx.crc32 = adler32_z(0L, NULL, 0);
+	break;
+	
+      case TEST_DIGEST_CRC32:
+	tp->digest.ctx.adler32 = crc32_z(0L, NULL, 0);
+	break;
+	
+      case TEST_DIGEST_MD5:
+	MD5Init(&tp->digest.ctx.md5);
+	break;
+	
+      case TEST_DIGEST_SHA256:
+	SHA256_Init(&tp->digest.ctx.sha256);
+	break;
+	
+      case TEST_DIGEST_SHA384:
+	SHA384_Init(&tp->digest.ctx.sha384);
+	break;
+	
+      case TEST_DIGEST_SHA512:
+	SHA512_Init(&tp->digest.ctx.sha512);
+	break;
+      }
+    }
+    
+    rc = (*tstfun)(tp);
+
+    if (tp->digest.type) {
+      switch (tp->digest.type) {
+      case TEST_DIGEST_ADLER32:
+	tp->digest.buffer.last.adler32 = tp->digest.ctx.adler32;
+	if (pass == 1)
+	  tp->digest.buffer.first.adler32 = tp->digest.ctx.adler32;
+	else {
+	  if (tp->digest.buffer.first.adler32 != tp->digest.buffer.last.adler32) {
+	    fprintf(stderr, "%s: Error: ADLER-32 Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
+		    argv0,
+		    tp->digest.buffer.first.adler32,
+		    pass,
+		    tp->digest.buffer.last.adler32);
+	    return 1;
+	  }
+	}
+	break;
+	
+      case TEST_DIGEST_CRC32:
+	tp->digest.buffer.last.crc32 = tp->digest.ctx.crc32;
+	if (pass == 1)
+	  tp->digest.buffer.first.crc32 = tp->digest.ctx.crc32;
+	else {
+	  if (tp->digest.buffer.first.crc32 != tp->digest.buffer.last.crc32) {
+	    fprintf(stderr, "%s: Error: CRC-32 Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
+		    argv0,
+		    tp->digest.buffer.first.crc32,
+		    pass,
+		    tp->digest.buffer.last.crc32);
+	    return 1;
+	  }
+	}
+	break;
+	
+      case TEST_DIGEST_MD5:
+	MD5Final(tp->digest.buffer.last.md5, &tp->digest.ctx.md5);
+	if (pass == 1)
+	  memcpy(tp->digest.buffer.first.md5,
+		 tp->digest.buffer.last.md5,
+		 sizeof(tp->digest.buffer.first.md5));
+	else {
+	  if (memcmp(tp->digest.buffer.first.md5,
+		     tp->digest.buffer.last.md5,
+		     sizeof(tp->digest.buffer.first.md5)) != 0) {
+	    fprintf(stderr, "%s: Error: MD-5 Digest mismatch between passes\n", argv0);
+	    return 1;
+	  }
+	}
+	break;
+	
+      case TEST_DIGEST_SHA256:
+	SHA256_Final(tp->digest.buffer.last.sha256, &tp->digest.ctx.sha256);
+	if (pass == 1)
+	  memcpy(tp->digest.buffer.first.sha256,
+		 tp->digest.buffer.last.sha256,
+		 sizeof(tp->digest.buffer.first.sha256));
+	else {
+	  if (memcmp(tp->digest.buffer.first.sha256,
+		     tp->digest.buffer.last.sha256,
+		     sizeof(tp->digest.buffer.first.sha256)) != 0) {
+	    fprintf(stderr, "%s: Error: SHA-256 Digest mismatch between passes\n", argv0);
+	    return 1;
+	  }
+	}
+	break;
+	
+      case TEST_DIGEST_SHA384:
+	SHA384_Final(tp->digest.buffer.last.sha384, &tp->digest.ctx.sha384);
+	if (pass == 1)
+	  memcpy(tp->digest.buffer.first.sha384,
+		 tp->digest.buffer.last.sha384,
+		 sizeof(tp->digest.buffer.first.sha384));
+	else {
+	  if (memcmp(tp->digest.buffer.first.sha384,
+		     tp->digest.buffer.last.sha384,
+		     sizeof(tp->digest.buffer.first.sha384)) != 0) {
+	    fprintf(stderr, "%s: Error: SHA-384 Digest mismatch between passes\n", argv0);
+	    return 1;
+	  }
+	}
+	break;
+	
+      case TEST_DIGEST_SHA512:
+	SHA512_Final(tp->digest.buffer.last.sha512, &tp->digest.ctx.sha512);
+	if (pass == 1)
+	  memcpy(tp->digest.buffer.first.sha512,
+		 tp->digest.buffer.last.sha512,
+		 sizeof(tp->digest.buffer.first.sha512));
+	else {
+	  if (memcmp(tp->digest.buffer.first.sha512,
+		     tp->digest.buffer.last.sha512,
+		     sizeof(tp->digest.buffer.first.sha512)) != 0) {
+	    fprintf(stderr, "%s: Error: SHA-512 Digest mismatch between passes\n", argv0);
+	    return 1;
+	  }
+	}
+	break;
+      }
+    }
+  }
+  
+  return rc;
+}
+
+
+
 
 int
 main(int argc,
      char *argv[]) {
-  DEVICE *dev = NULL;
+  DRIVE *dp = NULL;
   TEST tst;
   int i, j, rc;
-  char *arg, *ds;
-  unsigned char o_digest[64], digest[64];
-  unsigned long o_adler32;
-  int (*tstfun)(TEST *tp);
+  char *arg;
 
   char *s_digest = NULL;
   char *s_transform = NULL;
@@ -1862,10 +2310,6 @@ main(int argc,
 	++f_update;
 	break;
 
-      case 'p':
-	++f_print;
-	break;
-	
       case 'v':
 	++f_verbose;
 	break;
@@ -1991,49 +2435,39 @@ main(int argc,
   NextArg:;
   }
 
-
   printf("[drvtool, version %s, by Peter Eriksson <pen@lysator.liu.se>]\n\n", version);
     
   if (i >= argc) {
-    disks_load();
-    
-    puts("AVAILABLE DISK SELECTIONS:");
-    disks_print();
-    exit(0);
-  }
-  
-  if (disks_add(argv[i]) < 0) {
-    fprintf(stderr, "%s: Error: %s: Unable to open device: %s\n",
-	    argv0, argv[i], strerror(errno));
-    exit(1);
-  }
-  
-  ++i;
+    drives_load();
+  } else {
+    dp = drive_open(argv[i]);
+    if (!dp) {
+      fprintf(stderr, "%s: Error: %s: Unable to open drive: %s\n",
+	      argv0, argv[i], strerror(errno));
+      exit(1);
+    }
 
-  dev = disks->dev;
-  puts("SELECTED DISK:");
-  dev_print(stdout, 0, dev);
-  putchar('\n');
+    ++i;
+  }
 
-  if (dev->flags.is_ssd && f_update && !f_yes) {
-    rc = prompt_yes("*** DEVICE IS SSD ***\nBeware of any tests that write data to the device! Proceed anyway?");
+  if (!dp) {
+    puts("AVAILABLE DRIVE SELECTIONS:");
+    drives_print(1);
+    dp = drive_select(NULL);
+  } else {
+    puts("DRIVE SELECTED:");
+    drives_print(0);
+  }
+
+  if (dp->flags.is_ssd && f_update && !f_yes) {
+    rc = prompt_yes("\n*** SSD DETECTED ***\nBeware of any tests that write data to the drive! Proceed anyway?");
     if (rc != 1) {
       fprintf(stderr, "*** Aborted ***\n");
       exit(0);
     }
   }
 
-#if 0
-  if (dev->flags.is_open && f_update && !f_yes) {
-    rc = prompt_yes("*** DEVICE IS IN USE ***\nProceed anyway?");
-    if (rc != 1) {
-      fprintf(stderr, "*** Aborted ***\n");
-      exit(0);
-    }
-  }
-#endif
-  
-  test_init(&tst, dev);
+  test_init(&tst, dp);
   
   if (s_bsize) {
     off_t v;
@@ -2083,17 +2517,17 @@ main(int argc,
   }
   
   if (s_time) {
-    rc = str2time(s_time, &tst.t_max);
+    rc = str2time(s_time, &tst.timeout);
     if (rc < 1) {
-      fprintf(stderr, "%s: Error: %s: Invalid time\n",
+      fprintf(stderr, "%s: Error: %s: Invalid timeout\n",
 	      argv0, arg);
       exit(1);
     }
   }
   
   if (s_digest) {
-    tst.digest = str2digest(s_digest);
-    if (tst.digest < 0) {
+    tst.digest.type = str2digest(s_digest);
+    if (tst.digest.type < 0) {
       fprintf(stderr, "%s: Error: %s: Invalid digest type\n",
 	      argv0, s_digest);
       exit(1);
@@ -2123,265 +2557,43 @@ main(int argc,
     blocks_shuffle(tst.blocks);
   }
   
-  if (f_verbose)
-    printf("Test Block Range: %ld - %ld (%ld blocks)\n\n",
-	   tst.b_start,
-	   tst.b_end-1,
-	   tst.b_length);
-  
-  for (; i < argc; i++) {
-    unsigned int pass;
-    char tbuf[256], bbuf[256], sbuf[256];
-    char *tstname = "?";
-    off_t blocks = tst.b_length;
-    off_t bytes = blocks * tst.b_size;
-    int rc;
+  if (f_verbose) {
+    test_print_config(stdout, &tst);
+  }
 
-    
-    if (strcmp(argv[i], "help") == 0) {
-      
-      usage(stdout);
-      exit(0);
-      
-    } else if (strcmp(argv[i], "read") == 0) {
-      
-      tstname = "Read";
-      tst.rbuf = tst.obuf;
-      tst.wbuf = tst.obuf;
-      tst.flags = TEST_READ;
-      tstfun = test_seq;
-      
-    } else if (strcmp(argv[i], "refresh") == 0) {
-      
-      tstname = "Refresh";
-      tst.wbuf = tst.obuf;
-      tst.rbuf = tst.wbuf;
-      tst.flags = TEST_READ|TEST_WRITE;
-      tstfun = test_seq;
-      
-    } else if (strcmp(argv[i], "verify") == 0) {
-      
-      tstname = "Refresh+Verify";
-      tst.wbuf = tst.obuf;
-      tst.flags = TEST_READ|TEST_WRITE|TEST_VERIFY;
-      tstfun = test_seq;
+  if (i == argc) {
+    char buf[256], *bp, *act;
 
-    } else if (strcmp(argv[i], "test") == 0) {
+    do {
       
-      tstname = "Pattern";
-      tst.flags = TEST_READ|TEST_PATTERN|TEST_WRITE|TEST_VERIFY|TEST_RESTORE;
-      tstfun = test_seq;
+      fprintf(stderr, "\n[%s]> ", tst.drive->name);
+      if (fgets(buf, sizeof(buf), stdin) == NULL)
+	exit(1);
       
-    } else if (strcmp(argv[i], "write") == 0) {
+      bp = strtrim(buf);
+      if (!*bp || *bp == '#')
+	continue;
 
-      tstname = "Write";
-      
-      rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
-		      tstname);
-      if (rc != 1) {
-	fprintf(stderr, "*** Aborted ***\n");
-	exit(0);
+      if (*bp == '!') {
+	system(bp+1);
+	continue;
       }
       
-      tst.rbuf = tst.wbuf;
-      tst.flags = TEST_WRITE|TEST_PATTERN;
-      tstfun = test_seq;
+      act = strsep(&bp, " \t\r\n");
+      if (!act)
+	continue;
       
-    } else if (strcmp(argv[i], "compare") == 0) {
+      rc = test_action(&tst, act, bp);
+    } while(1);
+  } else {
+    for (; i < argc; i++) {
+      putchar('\n');
       
-      tstname = "Write+Read+Verify";
-      
-      rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
-		      tstname);
-      if (rc != 1) {
-	fprintf(stderr, "*** Aborted ***\n");
-	exit(0);
-      }
-      
-      tst.flags = TEST_WRITE|TEST_PATTERN|TEST_VERIFY;
-      tstfun = test_seq;
-      
-    } else if (strcmp(argv[i], "purge") == 0) {
-      
-      tstname = "Purge";
-      
-      rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
-		      tstname);
-      if (rc != 1) {
-	fprintf(stderr, "*** Aborted ***\n");
-	exit(0);
-      }
-      
-      tst.flags = TEST_WRITE|TEST_PURGE|TEST_VERIFY;
-      tstfun = test_seq;
-      
-    } else if (strcmp(argv[i], "delete") == 0) {
-      
-      tstname = "TRIM Delete";
-      
-      rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
-		      tstname);
-      if (rc != 1) {
-	fprintf(stderr, "*** Aborted ***\n");
-	exit(0);
-      }
-      
-      tst.flags = TEST_DELETE;
-      tstfun = test_seq;
-      
-    } else if (strcmp(argv[i], "delete-all") == 0) {
-      
-      tstname = "TRIM Delete-All";
-      
-      rc = prompt_yes("About to start %s. This will corrupt any data on the device.\nContinue?",
-		      tstname);
-      if (rc != 1) {
-	fprintf(stderr, "*** Aborted ***\n");
-	exit(0);
-      }
-      
-      tstfun = test_trim;
-      
-    }  else {
-      
-      fprintf(stderr, "%s: Error: %s: Invalid action\n", argv0, argv[i]);
-      exit(1);
-
-    }
-    
-    printf("%s %s Test (%sB / %s blocks @ %sB):\n",
-	   tst.blocks ? (tst.blocks->s ? "Shuffled" : "Random") : "Sequential",
-	   tstname,
-	   int2str(bytes,  tbuf, sizeof(tbuf), 0),
-	   int2str(blocks, bbuf, sizeof(bbuf), 0),
-	   int2str(tst.b_size, sbuf, sizeof(sbuf), 1));
-    
-    for (pass = 1; pass <= tst.passes; ++pass) {
-      if (tst.flags & TEST_PATTERN) {
-	memcpy(sel_pattern, test_patterns[(pass-1) % NUM_TEST_PATTERNS], sizeof(sel_pattern));
-	pattern_fill(tst.wbuf, tst.b_size, sel_pattern, sizeof(sel_pattern));
-	
-	printf("  Pass %u [", pass);
-	buf_print(stdout, sel_pattern, sizeof(sel_pattern), 0);
-	printf("]:\n");
-      } else if (tst.passes > 1)
-	printf("  Pass %u:\n", pass);
-      
-      switch (tst.digest) {
-      case TEST_DIGEST_ADLER32:
-	tst.ctx.adler32 = adler32_z(0L, NULL, 0);
+      rc = test_action(&tst, argv[i], NULL);
+      if (rc)
 	break;
-	
-      case TEST_DIGEST_CRC32:
-	tst.ctx.adler32 = crc32_z(0L, NULL, 0);
-	break;
-	
-      case TEST_DIGEST_SHA256:
-	SHA256_Init(&tst.ctx.sha256);
-	break;
-	
-      case TEST_DIGEST_SHA384:
-	SHA384_Init(&tst.ctx.sha384);
-	break;
-	
-      case TEST_DIGEST_SHA512:
-	SHA512_Init(&tst.ctx.sha512);
-	break;
-      }
-
-      rc = (*tstfun)(&tst);
-  
-      switch (tst.digest) {
-      case TEST_DIGEST_ADLER32:
-      case TEST_DIGEST_CRC32:
-	ds = (tst.digest == TEST_DIGEST_ADLER32) ? "ADLER-32" : "CRC-32";
-	      
-	if (pass == tst.passes)
-	  printf("\n%s Digest:\n  %08lX\n",
-		 ds,
-		 tst.ctx.adler32);
-	
-	if(pass == 1)
-	  o_adler32 = tst.ctx.adler32;
-	else {
-	  if (o_adler32 != tst.ctx.adler32) {
-	    fprintf(stderr, "%s: Error: %s Digest mismatch pass 1 (%08lX) vs pass %d (%08lX)\n",
-		    argv0,
-		    ds,
-		    o_adler32,
-		    pass,
-		    tst.ctx.adler32);
-	    exit(1);
-	  }
-	}
-	break;
-	
-      case TEST_DIGEST_SHA256:
-	SHA256_Final(digest, &tst.ctx.sha256);
-
-	if (pass == tst.passes) {
-	  printf("\nSHA256 Digest:\n");
-	  buf_print(stdout, digest, 32, 1);
-	}
-	
-	if (pass == 1)
-	  memcpy(o_digest, digest, 32);
-	else {
-	  if (memcmp(o_digest, digest, 32) != 0) {
-	    fprintf(stderr, "%s: Error: SHA256 Digest mismatch between passes\n", argv0);
-	    exit(1);
-	  }
-	}
-	
-	break;
-	
-      case TEST_DIGEST_SHA384:
-	SHA384_Final(digest, &tst.ctx.sha384);
-
-	if (pass == tst.passes) {
-	  printf("\nSHA384 Digest:\n");
-	  buf_print(stdout, digest, 48, 1);
-	}
-	
-	if (pass == 1)
-	  memcpy(o_digest, digest, 48);
-	else {
-	  if (memcmp(o_digest, digest, 48) != 0) {
-	    fprintf(stderr, "%s: Error: SHA384 Digest mismatch between passes\n", argv0);
-	    exit(1);
-	  }
-	}
-	break;
-	
-      case TEST_DIGEST_SHA512:
-	SHA512_Final(digest, &tst.ctx.sha512);
-	
-	if (pass == tst.passes) {
-	  printf("\nSHA512 Digest:\n");
-	  buf_print(stdout, digest, 64, 1);
-	}
-
-	if (pass == 1)
-	  memcpy(o_digest, digest, 64);
-	else {
-	  if (memcmp(o_digest, digest, 64) != 0) {
-	    fprintf(stderr, "%s: Error: SHA512 Digest mismatch between passes\n", argv0);
-	    exit(1);
-	  }
-	}
-	break;
-      }
-    }
-    
-    if (f_print) {
-      printf("\nLast Data Block - %lu bytes @ block %ld (offset %ld):\n",
-	     tst.b_size,
-	     tst.last_b_pos,
-	     tst.last_pos);
-      
-      buf_print(stdout, tst.rbuf, tst.b_size, 3);
     }
   }
   
-  exit(0);
+  return rc;
 }

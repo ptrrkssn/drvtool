@@ -5,7 +5,17 @@
 #ifndef DRVTOOL_H
 #define DRVTOOL_H 1
 
-typedef struct {
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+
+#include <md5.h>
+#include <sha256.h>
+#include <sha384.h>
+#include <sha512.h>
+
+typedef struct blocks {
   off_t *v;
   off_t s;
 } BLOCKS;
@@ -20,6 +30,7 @@ typedef unsigned char PATTERN[4];
 #define TEST_DIGEST_SHA512  3
 #define TEST_DIGEST_ADLER32 4
 #define TEST_DIGEST_CRC32   5
+#define TEST_DIGEST_MD5     6
 
 #define TEST_TRANSFORM_NONE 0
 #define TEST_TRANSFORM_XOR  1
@@ -29,14 +40,14 @@ typedef unsigned char PATTERN[4];
 
 #define RATE_BUF_SIZE 16
 
-typedef struct {
+typedef struct rate {
   unsigned int f;
   unsigned int p;
   off_t dv[RATE_BUF_SIZE];
 } RATE;
 
 
-typedef struct {
+typedef struct drive {
   char *name;
   char *path;
   
@@ -46,9 +57,6 @@ typedef struct {
   struct {
     unsigned int is_file : 1;
     unsigned int is_ssd  : 1;
-#if 0
-    unsigned int is_open : 1;
-#endif
   } flags;
   
   off_t media_size;
@@ -72,16 +80,9 @@ typedef struct {
   struct {
     char *path;
   } cam;
-  
-} DEVICE;
 
-
-
-typedef struct disk {
-  struct disk *next;
-  char *name;
-  DEVICE *dev;
-} DISK;
+  struct drive *next;
+} DRIVE;
 
 
 
@@ -94,19 +95,50 @@ typedef struct disk {
 #define TEST_PURGE    0x0020
 #define TEST_FLUSH    0x0040
 #define TEST_DELETE   0x0080
-#define TEST_CRYPT    0x0100
 
 
-typedef struct {
-  DEVICE *dev;
+#define DIGEST_BUFSIZE 64
+
+typedef struct digest {
+  int type;
+  struct {
+    union {
+      unsigned long crc32;
+      unsigned long adler32;
+      unsigned char md5[16];
+      unsigned char sha256[32];
+      unsigned char sha384[48];
+      unsigned char sha512[64];
+    } first;
+    union {
+      unsigned long crc32;
+      unsigned long adler32;
+      unsigned char md5[16];
+      unsigned char sha256[32];
+      unsigned char sha384[48];
+      unsigned char sha512[64];
+    } last;
+  } buffer;
+  union {
+    unsigned long crc32;
+    unsigned long adler32;
+    MD5_CTX md5;
+    SHA256_CTX sha256;
+    SHA384_CTX sha384;
+    SHA512_CTX sha512;
+  } ctx;
+} DIGEST;
+
+
+typedef struct test {
+  DRIVE *drive;
   
   RATE rate;           /* Transfer rate buffer        */
 
   unsigned int flags;  /* Test flags                  */
   
-  int passes;          /* Number of passes            */
-  
-  time_t t_max;        /* Max length of test run      */
+  int    passes;       /* Number of passes            */
+  time_t timeout;      /* Max length of test run      */
   
   off_t b_size;        /* Size of each block          */
   off_t b_total;       /* Device size in # blocks     */
@@ -121,15 +153,8 @@ typedef struct {
     unsigned char ror;
     unsigned char rol;
   } txd;
-    
-  int digest;
-  union digest_ctx {
-    SHA256_CTX sha256;
-    SHA384_CTX sha384;
-    SHA512_CTX sha512;
-    unsigned long adler32;
-  } ctx;
 
+  DIGEST digest;
   BLOCKS *blocks;
   
   struct timespec t0;  /* Start time                  */
