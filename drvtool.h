@@ -94,7 +94,7 @@ typedef struct drive {
 #define TEST_PATTERN  0x0010
 #define TEST_PURGE    0x0020
 #define TEST_FLUSH    0x0040
-#define TEST_DELETE   0x0080
+#define TEST_TRIM     0x0080
 
 
 #define DIGEST_BUFSIZE 64

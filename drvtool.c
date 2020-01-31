@@ -57,10 +57,11 @@ long f_update_freq = 500;
 int f_yes        = 0;
 int f_ibase      = 0;
 int f_flush      = 0;
-int f_delete     = 0;
+int f_trim     = 0;
 int f_update     = 0;
 int f_verbose    = 0;
 int f_reverse    = 0;
+int f_debug      = 0;
 
 int f_passes     = 2; /* loops, 0 = loop continously (forever, or until timeout*/
 time_t f_timeout = 0; /* seconds, 0 = no time limit */
@@ -531,8 +532,8 @@ test_init(TEST *tp,
 
   tp->blocks = d_blocks;
 
-  tp->last_b_pos = 0;
-  tp->last_pos = 0;
+  tp->last_b_pos = -1;
+  tp->last_pos = -1;
   
   return 0;
 }
@@ -1138,35 +1139,42 @@ drives_load(void) {
   size_t bsize;
   char *buf;
   char *cp;
-  
+  int n, rc = 0;
+
   
   if (sysctlbyname("kern.disks", NULL, &bsize, NULL, 0) < 0) {
-    fprintf(stderr, "%s: Error: Unable to get number of drives from kernel: %s\n",
-	    argv0, strerror(errno));
+    if (f_debug)
+      fprintf(stderr, "%s: Error: Unable to get number of drives from kernel: %s\n",
+	      argv0, strerror(errno));
     return -1;
   }
 
   buf = malloc(bsize);
   if (!buf) {
-    fprintf(stderr, "%s: Error: malloc(%ld bytes) failed: %s\n",
-	    argv0, bsize, strerror(errno));
-    exit(1);
+    if (f_debug)
+      fprintf(stderr, "%s: Error: malloc(%ld bytes) failed: %s\n",
+	      argv0, bsize, strerror(errno));
+    return -1;
   }
   
   if (sysctlbyname("kern.disks", buf, &bsize, NULL, 0) < 0) {
-    fprintf(stderr, "%s: Error: Unable to get list of drives from kernel: %s\n",
-	    argv0, strerror(errno));
-    exit(1);
+    if (f_debug)
+      fprintf(stderr, "%s: Error: Unable to get list of drives from kernel: %s\n",
+	      argv0, strerror(errno));
+    return -1;
   }
 
+  n = 0;
   while ((cp = strsep(&buf, " ")) != NULL) {
     if (drive_open(cp) == NULL) {
-      fprintf(stderr, "%s: Error: %s: Invalid drives list\n", argv0, buf);
-      return -1;
-    }
+      if (f_debug)
+	fprintf(stderr, "%s: Error: %s: Opening drive: %s\n", argv0, cp, strerror(errno));
+      rc = -1;
+    } else
+      ++n;
   }
   
-  return 0;
+  return rc < 0 ? rc : n;
 }
 
 
@@ -1489,7 +1497,7 @@ test_seq(TEST *tp) {
       }
     }
     
-    if (f_delete && (tp->flags & TEST_DELETE)) {
+    if (f_trim && (tp->flags & TEST_TRIM)) {
       /* TRIM block from (SSD) device */
       
       rc = drive_delete(dp, pos, tp->b_size);
@@ -1705,6 +1713,7 @@ act_help(FILE *fp) {
   fprintf(fp, "COMMANDS:\n");
   fprintf(fp, "  drive            Select new drive\n");
   fprintf(fp, "  current          Describe current drive\n");
+  fprintf(fp, "  config           Display test configuration\n");
   
   fprintf(fp, "  read             Read-only test [doesn't harm OS]\n");
   fprintf(fp, "  refresh          Read+Rewrite test [doesn't harm data]\n");
@@ -1713,7 +1722,7 @@ act_help(FILE *fp) {
   fprintf(fp, "  write            Write-only pattern test [corrupts data]\n");
   fprintf(fp, "  compare          Write+Read pattern test [corrupts data]\n");
   fprintf(fp, "  purge            Multi-pass Write+Read NCSC-TG-025/DoD 5220.22-M purge [corrupts data]\n");
-  fprintf(fp, "  delete           Send drive DELETE/TRIM commands [corrupts data]\n");
+  fprintf(fp, "  trim             Clean drive via TRIM commands [corrupts data]\n");
 
   fprintf(fp, "  digest           Display last calculated digest (if enabled)\n");
   fprintf(fp, "  print            Print last block buffer\n");
@@ -1739,12 +1748,13 @@ usage(FILE *fp) {
   fprintf(fp, "\nOPTIONS:\n");
   fprintf(fp, "  -h               Display this information\n");
   fprintf(fp, "  -V               Print program verson and exit\n");
+  fprintf(fp, "  -d               Increase debug info level\n");
   fprintf(fp, "  -v               Increase verbosity\n");
   fprintf(fp, "  -w               Open device in R/W mode (needed for write tests)\n");
   fprintf(fp, "  -y               Answer yes to all questions\n");
   fprintf(fp, "  -r               Reverse block order\n");
   fprintf(fp, "  -f               Flush device write buffer\n");
-  fprintf(fp, "  -d               Enable sending TRIM commands to device\n");
+  fprintf(fp, "  -t               Enable sending TRIM commands to device\n");
   fprintf(fp, "  -R <size>        Enable Shuffled (size of deck)/Random (size 0) order\n");
   fprintf(fp, "  -X <type>        Transform type (XOR,ROL,ROR) [NONE]\n");
   fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32,ADLER32,MD5,SHA256,SHA384,SHA512) [NONE]\n");
@@ -1878,7 +1888,13 @@ int
 act_print(FILE *fp,
 	  TEST *tp) {
   char b1[80], b2[80];
+
   
+  if (tp->last_b_pos < 0) {
+    fprintf(stderr, "%s: Error: No data block used yet\n", argv0);
+    return 1;
+  }
+    
   fprintf(fp, "DATA BUFFER @ block %ld (offset %sB) size %sB:\n",
 	  tp->last_b_pos,
 	  int2str(tp->last_pos, b1, sizeof(b1), 0),
@@ -2103,9 +2119,9 @@ test_action(TEST *tp,
     tp->flags = TEST_WRITE|TEST_PURGE|TEST_VERIFY;
     tstfun = test_seq;
     
-  } else if (strcmp(act, "delete") == 0) {
+  } else if (strcmp(act, "trim") == 0) {
     
-    tstname = "DELETE";
+    tstname = "TRIM";
     
     rc = prompt_yes("About to start %s. This will corrupt any data on the drive.\nContinue?",
 		    tstname);
@@ -2114,7 +2130,7 @@ test_action(TEST *tp,
       return 1;
     }
     
-    tp->flags = TEST_DELETE;
+    tp->flags = TEST_TRIM;
     tstfun = test_seq;
     
   }  else {
@@ -2334,8 +2350,12 @@ main(int argc,
 	++f_yes;
 	break;
 
+      case 't':
+	++f_trim;
+	break;
+	
       case 'd':
-	++f_delete;
+	++f_debug;
 	break;
 
       case 'D':
@@ -2438,7 +2458,11 @@ main(int argc,
   printf("[drvtool, version %s, by Peter Eriksson <pen@lysator.liu.se>]\n\n", version);
     
   if (i >= argc) {
-    drives_load();
+    if (drives_load() < 0) {
+      fprintf(stderr, "%s: Error: Unable to open drive(s): %s\n",
+	      argv0, strerror(errno));
+      exit(1);
+    }
   } else {
     dp = drive_open(argv[i]);
     if (!dp) {
@@ -2459,6 +2483,7 @@ main(int argc,
     drives_print(0);
   }
 
+  putchar('\n');
   if (dp->flags.is_ssd && f_update && !f_yes) {
     rc = prompt_yes("\n*** SSD DETECTED ***\nBeware of any tests that write data to the drive! Proceed anyway?");
     if (rc != 1) {
@@ -2565,8 +2590,10 @@ main(int argc,
     char buf[256], *bp, *act;
 
     do {
+
+      if (isatty(fileno(stdin)))
+	fprintf(stderr, "\n[%s]> ", tst.drive->name);
       
-      fprintf(stderr, "\n[%s]> ", tst.drive->name);
       if (fgets(buf, sizeof(buf), stdin) == NULL)
 	exit(1);
       
