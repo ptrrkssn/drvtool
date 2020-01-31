@@ -1,5 +1,50 @@
 # drvtool
 
-A utility for analyzing / wiping hard drives. Developed for FreeBSD
-currently.
+A utility for analyzing / wiping hard drives.
 
+Author: Peter Eriksson <pen@lysator.liu.se>
+Source: https://github.com/ptrrkssn/drvtool
+
+Developed primarily for FreeBSD currently.
+
+Usage:
+  ./drvtool [<options>] [<device> [<actions>]]
+
+Options:
+  -h               Display this information
+  -V               Print program verson and exit
+  -v               Increase verbosity
+  -w               Open device in R/W mode (needed for write tests)
+  -y               Answer yes to all questions
+  -r               Reverse block order
+  -f               Flush device write buffer
+  -d               Enable sending TRIM commands to device
+  -p               Print last block
+  -R <size>        Enable Shuffled (size of deck)/Random (size 0) order
+  -X <type>        Transform type (XOR, ROL, ROR) [NONE]
+  -D <type>        Digest (checksum) type (CRC32, ADLER32, SHA256, SHA384, SHA512) [NONE]
+  -T <time>        Test time limit [NONE]
+  -P <num>         Number of passes [1]
+  -S <pos>         Starting block offset [FIRST]
+  -L <size>        Number of blocks [ALL]
+  -B <size>        Block size [NATIVE]
+
+Actions:
+  read             Read-only test [doesn't harm OS]
+  refresh          Read+Rewrite test [doesn't harm data]
+  verify           Read+Rewrite+Read test [doesn't harm data]
+  test             Read+Write+Read+Restore pattern test [doesn't harm data]
+  write            Write-only pattern test [corrupts data]
+  compare          Write+Read pattern test [corrupts data]
+  purge            Multi-pass Write+Read NCSC-TG-025/DoD 5220.22-M purge [corrupts data]
+  delete           Send device TRIM commands [corrupts data]
+
+Notes:
+
+  - Beware of using any of the write tests on SSD devices. Due
+    to the way they operate (with remapping of blocks for wear levelling)
+    you will not test what you intend and instead just make them fail faster.
+    
+  - Beware that the Shuffle (-R) option allocates a lot of RAM, typically
+    8 bytes times the number of blocks requested - but it guarantees that
+    all blocks in the requested range will be visited.

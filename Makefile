@@ -15,5 +15,8 @@ $(PGM): $(OBJS)
 clean distclean:
 	-rm -f $(PGM) *.o *~ \#* core *.core
 
+pull:
+	git pull
+
 push: clean
 	git add -A && git commit -a && git push

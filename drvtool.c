@@ -1708,9 +1708,9 @@ usage(FILE *fp) {
   fprintf(fp, "  - Beware of using any of the write tests on SSD devices. Due\n");
   fprintf(fp, "    to the way they operate (with remapping of blocks for wear levelling)\n");
   fprintf(fp, "    you will not test what you intend and instead just make them fail faster.\n");
-  fprintf(fp, "  - Beware that the Shuffle (-rr) option allocates a lot of RAM, typically\n");
-  fprintf(fp, "    8 bytes times the number of blocks of the device but it guarantees that\n");
-  fprintf(fp, "    all blocks in the requested range will be visited.\n");
+  fprintf(fp, "  - Beware that the Shuffle (-R with size > 0) option allocates a lot of RAM,\n");
+  fprintf(fp, "    typically 8 bytes times the number of blocks of the device. One the other hand\n");
+  fprintf(fp, "    it guarantees that all blocks in the requested range will be visited.\n");
 }
 
 
