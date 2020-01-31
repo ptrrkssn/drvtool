@@ -50,7 +50,7 @@
 
 
 char *argv0 = "drvtool";
-char *version = "1.3";
+char *version = "1.4";
 
 long f_update_freq = 500;
 
