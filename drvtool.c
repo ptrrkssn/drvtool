@@ -1496,13 +1496,13 @@ test_seq(TEST *tp) {
       }
 
       switch (tp->transform) {
-      case TEST_TRANSFORM_XOR:
+      case TRANSFORM_XOR:
 	buf_xor(tp->wbuf, tp->b_size, tp->txd.xor);
 	break;
-      case TEST_TRANSFORM_ROR:
+      case TRANSFORM_ROR:
 	buf_ror(tp->wbuf, tp->b_size, tp->txd.ror);
 	break;
-      case TEST_TRANSFORM_ROL:
+      case TRANSFORM_ROL:
 	buf_rol(tp->wbuf, tp->b_size, tp->txd.rol);
 	break;
       }
@@ -1900,7 +1900,7 @@ str2transform(const char *s,
   int v;
 
   if (strcasecmp(s, "NONE") == 0)
-    return TEST_TRANSFORM_NONE;
+    return TRANSFORM_NONE;
   
   if (strncasecmp(s, "XOR", 3) == 0) {
     s += 3;
@@ -1912,7 +1912,7 @@ str2transform(const char *s,
       return -1;
     
     d->xor = v;
-    return TEST_TRANSFORM_XOR;
+    return TRANSFORM_XOR;
   }
 
   if (strncasecmp(s, "ROR", 3) == 0) {
@@ -1925,7 +1925,7 @@ str2transform(const char *s,
       return -1;
     
     d->xor = v;
-    return TEST_TRANSFORM_ROR;
+    return TRANSFORM_ROR;
   }
 
   if (strncasecmp(s, "ROL", 3) == 0) {
@@ -1938,7 +1938,7 @@ str2transform(const char *s,
       return -1;
     
     d->xor = v;
-    return TEST_TRANSFORM_ROL;
+    return TRANSFORM_ROL;
   }
 
   return -1;

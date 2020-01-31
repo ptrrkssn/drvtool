@@ -32,10 +32,10 @@ typedef unsigned char PATTERN[4];
 #define DIGEST_CRC32   5
 #define DIGEST_MD5     6
 
-#define TEST_TRANSFORM_NONE 0
-#define TEST_TRANSFORM_XOR  1
-#define TEST_TRANSFORM_ROR  2
-#define TEST_TRANSFORM_ROL  3
+#define TRANSFORM_NONE 0
+#define TRANSFORM_XOR  1
+#define TRANSFORM_ROR  2
+#define TRANSFORM_ROL  3
 
 
 #define RATE_BUF_SIZE 16
