@@ -1,13 +1,15 @@
 # Makefile for drvtool
 
 PGM=drvtool
-OBJS=drvtool.o
+OBJS=drvtool.o digest.o buffer.o
 CFLAGS=-Wall -g -O
 LIBS=-lcam -lmd -lz
 
 all: $(PGM)
 
-drvtool.o: drvtool.c drvtool.h
+drvtool.o: drvtool.c drvtool.h digest.h
+digest.o:  digest.c digest.h
+buffer.o:  buffer.c buffer.h
 
 $(PGM): $(OBJS)
 	$(CC) -o $(PGM) $(OBJS) $(LIBS)

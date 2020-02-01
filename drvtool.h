@@ -10,10 +10,8 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
-#include <md5.h>
-#include <sha256.h>
-#include <sha384.h>
-#include <sha512.h>
+#include "digest.h"
+
 
 typedef struct blocks {
   off_t *v;
@@ -23,14 +21,6 @@ typedef struct blocks {
 
 typedef unsigned char PATTERN[4];
 
-
-#define DIGEST_NONE    0
-#define DIGEST_SHA256  1
-#define DIGEST_SHA384  2
-#define DIGEST_SHA512  3
-#define DIGEST_ADLER32 4
-#define DIGEST_CRC32   5
-#define DIGEST_MD5     6
 
 #define TRANSFORM_NONE 0
 #define TRANSFORM_XOR  1
@@ -97,37 +87,6 @@ typedef struct drive {
 #define TEST_TRIM     0x0080
 
 
-#define DIGEST_BUFSIZE 64
-
-typedef struct digest {
-  int type;
-  struct {
-    union {
-      unsigned long crc32;
-      unsigned long adler32;
-      unsigned char md5[16];
-      unsigned char sha256[32];
-      unsigned char sha384[48];
-      unsigned char sha512[64];
-    } first;
-    union {
-      unsigned long crc32;
-      unsigned long adler32;
-      unsigned char md5[16];
-      unsigned char sha256[32];
-      unsigned char sha384[48];
-      unsigned char sha512[64];
-    } last;
-  } buffer;
-  union {
-    unsigned long crc32;
-    unsigned long adler32;
-    MD5_CTX md5;
-    SHA256_CTX sha256;
-    SHA384_CTX sha384;
-    SHA512_CTX sha512;
-  } ctx;
-} DIGEST;
 
 
 typedef struct test {
@@ -154,8 +113,20 @@ typedef struct test {
     unsigned char rol;
   } txd;
 
-  int digest_type;
-  DIGEST digest;
+  struct {
+    DIGEST data;
+    struct {;
+      struct {
+	unsigned char data[DIGEST_BUFSIZE_MAX];
+	size_t len;
+      } first;
+      struct {
+	unsigned char data[DIGEST_BUFSIZE_MAX];
+	size_t len;
+      } last;
+    } buffer;
+  } digest;
+  
   BLOCKS *blocks;
   
   struct timespec t0;  /* Start time                  */
@@ -168,6 +139,5 @@ typedef struct test {
   off_t last_b_pos;
   off_t last_pos;
 } TEST;
-
 
 #endif
