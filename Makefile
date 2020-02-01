@@ -1,5 +1,8 @@
 # Makefile for drvtool
 
+DEST=/usr/local
+BINDEST=$(DEST)/bin
+
 PGM=drvtool
 OBJS=drvtool.o digest.o buffer.o rate.o blocks.o
 CFLAGS=-Wall -g -O
@@ -24,3 +27,6 @@ pull:
 
 push: clean
 	git add -A && git commit -a && git push
+
+install: $(PGM)
+	install -m 755 $(PGM) $(BINDEST)

@@ -7,29 +7,37 @@ Source: https://github.com/ptrrkssn/drvtool
 
 Developed primarily for FreeBSD currently.
 
-Usage:
-  ./drvtool [<options>] [<device> [<actions>]]
+BUILD INSTRUCTIONS
 
-Options:
+make && make install
+
+
+USAGE:
+  ./drvtool [<options>] [<device> [<commands>]]
+
+OPTIONS:
   -h               Display this information
   -V               Print program verson and exit
+  -d               Increase debug info level
   -v               Increase verbosity
   -w               Open device in R/W mode (needed for write tests)
   -y               Answer yes to all questions
   -r               Reverse block order
   -f               Flush device write buffer
-  -d               Enable sending TRIM commands to device
-  -p               Print last block
+  -t               Enable sending TRIM commands to device
   -R <size>        Enable Shuffled (size of deck)/Random (size 0) order
-  -X <type>        Transform type (XOR, ROL, ROR) [NONE]
-  -D <type>        Digest (checksum) type (CRC32, ADLER32, SHA256, SHA384, SHA512) [NONE]
-  -T <time>        Test time limit [NONE]
-  -P <num>         Number of passes [1]
-  -S <pos>         Starting block offset [FIRST]
+  -X <type>        Transform type [NONE]
+  -D <type>        Digest (checksum) type [NONE]
+  -T <time>        Test timeout (0 = no limit) [0]
+  -P <num>         Number of passes (0 = no limit) [2]
+  -S <pos>         Starting block offset [0]
   -L <size>        Number of blocks [ALL]
   -B <size>        Block size [NATIVE]
 
-Actions:
+COMMANDS:
+  drive            Select new drive
+  current          Describe current drive
+  config           Display test configuration
   read             Read-only test [doesn't harm OS]
   refresh          Read+Rewrite test [doesn't harm data]
   verify           Read+Rewrite+Read test [doesn't harm data]
@@ -37,14 +45,24 @@ Actions:
   write            Write-only pattern test [corrupts data]
   compare          Write+Read pattern test [corrupts data]
   purge            Multi-pass Write+Read NCSC-TG-025/DoD 5220.22-M purge [corrupts data]
-  delete           Send device TRIM commands [corrupts data]
+  trim             Clean drive via TRIM commands [corrupts data]
+  digest           Display last calculated digest (if enabled)
+  print            Print last block buffer
+  exit             Quit this program
+  !<cmd>           Execute <cmd> shell command
+  #<text>          Comment (ignored)
 
-Notes:
+DIGESTS:
+  NONE, ADLER32, CRC32, MD5, SKEIN256, SHA256, SHA384, SHA512
 
+TRANSFORMS:
+  NONE, XOR[-<value>], ROL[-<bits>], ROR[-<bits>]
+
+NOTES:
   - Beware of using any of the write tests on SSD devices. Due
     to the way they operate (with remapping of blocks for wear levelling)
     you will not test what you intend and instead just make them fail faster.
-    
-  - Beware that the Shuffle (-R) option allocates a lot of RAM, typically
-    8 bytes times the number of blocks requested - but it guarantees that
-    all blocks in the requested range will be visited.
+
+  - Beware that the Shuffle (-R with size > 0) option allocates a lot of RAM,
+    typically 8 bytes times the number of blocks of the device. One the other hand
+    it guarantees that all blocks in the requested range will be visited.
