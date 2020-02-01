@@ -59,7 +59,7 @@ extern int
 buf_truncate(BUFFER *bp,
 	     size_t size);
 
-extern char *
+extern unsigned char *
 buf_get(BUFFER *bp,
 	size_t *size);
 

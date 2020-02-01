@@ -96,7 +96,7 @@ buf_truncate(BUFFER *bp,
 }
 
 
-char *
+unsigned char *
 buf_get(BUFFER *bp,
 	size_t *size) {
   if (size)

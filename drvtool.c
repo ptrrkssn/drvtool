@@ -1598,6 +1598,12 @@ act_help(FILE *fp) {
   fprintf(fp, "  exit             Quit this program\n");
   fprintf(fp, "  !<cmd>           Execute <cmd> shell command\n");
   fprintf(fp, "  #<text>          Comment (ignored)\n");
+
+  fprintf(fp, "\nDIGESTS:\n");
+  fprintf(fp, "  NONE, ADLER32, CRC32, MD5, SKEIN256, SHA256, SHA384, SHA512\n");
+  
+  fprintf(fp, "\nTRANSFORMS:\n");
+  fprintf(fp, "  NONE, XOR[-<value>], ROL[-<bits>], ROR[-<bits>]\n");
   
   fprintf(fp, "\nNOTES:\n");
   fprintf(fp, "  - Beware of using any of the write tests on SSD devices. Due\n");
@@ -1624,8 +1630,8 @@ usage(FILE *fp) {
   fprintf(fp, "  -f               Flush device write buffer\n");
   fprintf(fp, "  -t               Enable sending TRIM commands to device\n");
   fprintf(fp, "  -R <size>        Enable Shuffled (size of deck)/Random (size 0) order\n");
-  fprintf(fp, "  -X <type>        Transform type (XOR,ROL,ROR) [NONE]\n");
-  fprintf(fp, "  -D <type>        Digest (checksum) type (CRC32,ADLER32,MD5,SHA256,SHA384,SHA512) [NONE]\n");
+  fprintf(fp, "  -X <type>        Transform type [NONE]\n");
+  fprintf(fp, "  -D <type>        Digest (checksum) type [NONE]\n");
   fprintf(fp, "  -T <time>        Test timeout (0 = no limit) [%ld]\n",    f_timeout);
   fprintf(fp, "  -P <num>         Number of passes (0 = no limit) [%d]\n", f_passes);
   fprintf(fp, "  -S <pos>         Starting block offset [0]\n");
