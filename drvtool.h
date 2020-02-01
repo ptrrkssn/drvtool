@@ -11,12 +11,9 @@
 #include <sys/time.h>
 
 #include "digest.h"
+#include "rate.h"
+#include "blocks.h"
 
-
-typedef struct blocks {
-  off_t *v;
-  off_t s;
-} BLOCKS;
 
 
 typedef unsigned char PATTERN[4];
@@ -28,13 +25,6 @@ typedef unsigned char PATTERN[4];
 #define TRANSFORM_ROL  3
 
 
-#define RATE_BUF_SIZE 16
-
-typedef struct rate {
-  unsigned int f;
-  unsigned int p;
-  off_t dv[RATE_BUF_SIZE];
-} RATE;
 
 
 typedef struct drive {

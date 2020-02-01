@@ -201,73 +201,6 @@ pattern_fill(unsigned char *buf,
 
 
 
-BLOCKS *
-blocks_create(off_t s) {
-  off_t i;
-  BLOCKS *bp;
-  
-
-  bp = malloc(sizeof(*bp));
-  if (!bp)
-    return NULL;
-
-  bp->s = s;
-  if (s) {
-    bp->v = calloc(bp->s, sizeof(bp->v[0]));
-    if (bp->v == NULL) {
-      free(bp);
-      return NULL;
-    }
-    
-    for (i = 0; i < bp->s; i++)
-      bp->v[i] = i;
-  } else
-    bp->v = NULL;
-  
-  return bp;
-}
-
-
-off_t
-orand(off_t size) {
-  off_t r;
-
-  r = (((off_t) lrand48() << 31) | ((off_t) lrand48() << 31)) | lrand48();
-  return r % size;
-}
-
-
-static inline void
-off_swap(off_t *a,
-	 off_t *b) {
-#if 0
-  off_t t = *a;
-  
-  *a = *b;
-  *b = t;
-#else
-  *a ^= *b;
-  *b ^= *a;
-  *a ^= *b;
-#endif
-}
-
-
-/* 
- * Shuffle blocks using Fisher-Yates shuffe algorithm.
- * Ensures each block is visited atleast once.
- */
-void
-blocks_shuffle(BLOCKS *bp) {
-  off_t i;
-
-  for (i = bp->s-1; i > 0; i--) {
-    off_t j = orand(i+1);
-    
-    off_swap(&bp->v[i], &bp->v[j]);
-  }
-}
-
 
 int
 drive_cam_sysctl(DRIVE *dp,
@@ -378,41 +311,6 @@ ts_delta(const struct timespec *x,
   /* Microseconds */
   return (double) r.tv_sec + r.tv_nsec / 1000000000.0;
 }
-
-void
-rate_init(RATE *rp) {
-  rp->f = 0;
-  rp->p = 0;
-}
-
-
-off_t
-rate_get(RATE *rp) {
-  unsigned int i;
-  off_t sum;
-
-  
-  if (!rp->f)
-    return 0;
-  
-  sum = 0;
-  for (i = 0; i < rp->f; i++)
-    sum += rp->dv[i];
-
-  return sum / rp->f;
-}
-
-
-void
-rate_update(RATE *rp,
-	    off_t delta) {
-  rp->dv[rp->p++] = delta;
-  rp->p %= RATE_BUF_SIZE;
-  
-  if (rp->f < RATE_BUF_SIZE)
-    rp->f++;
-}
-
 
 
 int
@@ -1350,15 +1248,8 @@ test_seq(TEST *tp) {
 
   for (b = 0; b < tp->b_length && (!tp->timeout || ts_delta(&now, &tp->t0, NULL, NULL) <= tp->timeout); ++b) {
 
-    if (tp->blocks) {
-      if (tp->blocks->s) {
-	off_t b_offset = b / tp->blocks->s;
-	b_pos = tp->blocks->v[b % tp->blocks->s] + b_offset * tp->blocks->s;
-      } else
-	b_pos = orand(tp->b_length);
-    } else
-      b_pos = b;
-
+    b_pos = blocks_lookup(tp->blocks, b, tp->b_length);
+    
     if (f_reverse)
       b_pos = tp->b_length - b_pos - 1;
     
@@ -2165,6 +2056,7 @@ main(int argc,
   TEST tst;
   int i, j, rc;
   char *arg;
+  time_t now;
 
   char *s_digest = NULL;
   char *s_transform = NULL;
@@ -2174,9 +2066,12 @@ main(int argc,
   char *s_length = NULL;
   char *s_bsize = NULL;
   char *s_rsize = NULL;
-  
-  argv0 = argv[0];
 
+  argv0 = argv[0];
+  
+  time(&now);
+  srand48((long) now);
+  
   for (i = 1; i < argc && argv[i][0] == '-'; i++) {
     arg = NULL;
     for (j = 1; argv[i][j]; j++) {
