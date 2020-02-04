@@ -43,6 +43,7 @@
 
 
 typedef enum {
+	      DIGEST_TYPE_INVALID  = -1,
 	      DIGEST_TYPE_NONE     = 0,
 	      DIGEST_TYPE_ADLER32  = 1,
 	      DIGEST_TYPE_CRC32    = 2,
@@ -93,7 +94,7 @@ typedef struct digest {
 
 extern int
 digest_init(DIGEST *dp,
-	    DIGEST_TYPE type);
+	    const char *stype);
 
 extern void
 digest_destroy(DIGEST *dp);

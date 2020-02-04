@@ -1,5 +1,5 @@
 /*
-** blocks.h - Blocks functions
+** transform.h - Data transformation functions
 **
 ** Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
 ** All rights reserved.
@@ -30,43 +30,37 @@
 ** OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
-#ifndef BLOCKS_H
-#define BLOCKS_H 1
+#ifndef TRANSFORM_H
+#define TRANSFORM_H 1
 
 #include <sys/types.h>
+#include <crypto/rijndael.h>
+
+typedef enum {
+	      TRANSFORM_TYPE_NONE = 0,
+	      TRANSFORM_TYPE_XOR  = 1,
+	      TRANSFORM_TYPE_ROR  = 2,
+	      TRANSFORM_TYPE_ROL  = 3,
+	      TRANSFORM_TYPE_AES  = 4,
+} TRANSFORM_TYPE;
+
+typedef struct {
+  int type;
+  union transform_txd {
+    unsigned char xor;
+    unsigned char ror;
+    unsigned char rol;
+  } txd;
+} TRANSFORM;
 
 
-typedef struct blocks {
-  off_t *v;
-  off_t s;
-} BLOCKS;
+extern int
+transform_init(TRANSFORM *tp,
+	       const char *s_type);
 
-
-extern BLOCKS *
-blocks_create(off_t size);
-
-extern void
-blocks_free(BLOCKS *bp);
-
-extern void
-blocks_shuffle(BLOCKS *bp);
-
-extern off_t
-blocks_lookup(BLOCKS *bp,
-	      off_t pos,
-	      off_t max);
-
-
-/* 
- * Start:
- * Blocks: 1-10,13,15-20
- * Length: 10+1+6 = 17
- *
- * After reverse:
- * 20-15,13,10-1
- *
- * After expand:
- * 1,2,3,4,5,6,7,8,9,10,13,15,16,17,18,19,20
- */
+extern int
+transform_apply(TRANSFORM *tp,
+		unsigned char *buf,
+		size_t bufsize);
 
 #endif

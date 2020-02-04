@@ -38,9 +38,79 @@
 
 #include "digest.h"
 
+
+DIGEST_TYPE
+digest_str2type(const char *s) {
+  if (strcasecmp(s, "NONE") == 0)
+    return DIGEST_TYPE_NONE;
+  
+  if (strcasecmp(s, "ADLER32") == 0 || strcasecmp(s, "ADLER-32") == 0)
+    return DIGEST_TYPE_ADLER32;
+
+  if (strcasecmp(s, "CRC32") == 0 || strcasecmp(s, "CRC-32") == 0)
+    return DIGEST_TYPE_CRC32;
+
+  if (strcasecmp(s, "MD5") == 0 || strcasecmp(s, "MD-5") == 0)
+    return DIGEST_TYPE_MD5;
+
+  if (strcasecmp(s, "SKEIN256") == 0 || strcasecmp(s, "SKEIN-256") == 0)
+    return DIGEST_TYPE_SKEIN256;
+
+  if (strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
+    return DIGEST_TYPE_SHA256;
+
+  if (strcasecmp(s, "SHA384") == 0 || strcasecmp(s, "SHA-384") == 0)
+    return DIGEST_TYPE_SHA384;
+
+  if (strcasecmp(s, "SHA512") == 0 || strcasecmp(s, "SHA-512") == 0)
+    return DIGEST_TYPE_SHA512;
+
+  return -1;
+}
+
+
+const char *
+digest_type2str(DIGEST_TYPE type) {
+  switch (type) {
+  case DIGEST_TYPE_NONE:
+    return "NONE";
+
+  case DIGEST_TYPE_ADLER32:
+    return "ADLER32";
+
+  case DIGEST_TYPE_CRC32:
+    return "CRC32";
+
+  case DIGEST_TYPE_MD5:
+    return "MD5";
+
+  case DIGEST_TYPE_SKEIN256:
+    return "SKEIN256";
+    
+  case DIGEST_TYPE_SHA256:
+    return "SHA256";
+    
+  case DIGEST_TYPE_SHA384:
+    return "SHA384";
+    
+  case DIGEST_TYPE_SHA512:
+    return "SHA512";
+
+  default:
+    return NULL;
+  }
+}
+
+
 int
 digest_init(DIGEST *dp,
-	    DIGEST_TYPE type) {
+	    const char *s_type) {
+  DIGEST_TYPE type = digest_str2type(s_type);
+
+  
+  if (type == DIGEST_TYPE_INVALID)
+    return -1;
+  
   memset(dp, 0, sizeof(*dp));
 
   dp->state = DIGEST_STATE_NONE;
@@ -154,6 +224,9 @@ digest_final(DIGEST *dp,
   case DIGEST_STATE_UPDATE:
     
     switch (dp->type) {
+    case DIGEST_TYPE_INVALID:
+      return -1;
+      
     case DIGEST_TYPE_NONE:
       rlen = 0;
       break;
@@ -232,68 +305,6 @@ digest_final(DIGEST *dp,
   return rlen;
 }
 
-
-DIGEST_TYPE
-digest_str2type(const char *s) {
-  if (strcasecmp(s, "NONE") == 0)
-    return DIGEST_TYPE_NONE;
-  
-  if (strcasecmp(s, "ADLER32") == 0 || strcasecmp(s, "ADLER-32") == 0)
-    return DIGEST_TYPE_ADLER32;
-
-  if (strcasecmp(s, "CRC32") == 0 || strcasecmp(s, "CRC-32") == 0)
-    return DIGEST_TYPE_CRC32;
-
-  if (strcasecmp(s, "MD5") == 0 || strcasecmp(s, "MD-5") == 0)
-    return DIGEST_TYPE_MD5;
-
-  if (strcasecmp(s, "SKEIN256") == 0 || strcasecmp(s, "SKEIN-256") == 0)
-    return DIGEST_TYPE_SKEIN256;
-
-  if (strcasecmp(s, "SHA256") == 0 || strcasecmp(s, "SHA-256") == 0)
-    return DIGEST_TYPE_SHA256;
-
-  if (strcasecmp(s, "SHA384") == 0 || strcasecmp(s, "SHA-384") == 0)
-    return DIGEST_TYPE_SHA384;
-
-  if (strcasecmp(s, "SHA512") == 0 || strcasecmp(s, "SHA-512") == 0)
-    return DIGEST_TYPE_SHA512;
-
-  return -1;
-}
-
-
-const char *
-digest_type2str(DIGEST_TYPE type) {
-  switch (type) {
-  case DIGEST_TYPE_NONE:
-    return "NONE";
-
-  case DIGEST_TYPE_ADLER32:
-    return "ADLER32";
-
-  case DIGEST_TYPE_CRC32:
-    return "CRC32";
-
-  case DIGEST_TYPE_MD5:
-    return "MD5";
-
-  case DIGEST_TYPE_SKEIN256:
-    return "SKEIN256";
-    
-  case DIGEST_TYPE_SHA256:
-    return "SHA256";
-    
-  case DIGEST_TYPE_SHA384:
-    return "SHA384";
-    
-  case DIGEST_TYPE_SHA512:
-    return "SHA512";
-
-  default:
-    return NULL;
-  }
-}
 
 
 void

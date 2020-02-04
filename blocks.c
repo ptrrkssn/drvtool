@@ -72,10 +72,10 @@ blocks_free(BLOCKS *bp) {
 
 
 static inline off_t
-orand(off_t size) {
+off_rand(off_t size) {
   off_t r;
 
-  r = (((off_t) lrand48() << 31) | ((off_t) lrand48() << 31)) | lrand48();
+  r = ((off_t) lrand48() << 31) | lrand48();
   return r % size;
 }
 
@@ -83,15 +83,17 @@ orand(off_t size) {
 static inline void
 off_swap(off_t *a,
 	 off_t *b) {
-#if 0
+#if 1
   off_t t = *a;
   
   *a = *b;
   *b = t;
 #else
-  *a ^= *b;
-  *b ^= *a;
-  *a ^= *b;
+  if (a != b) {
+    *a ^= *b;
+    *b ^= *a;
+    *a ^= *b;
+  }
 #endif
 }
 
@@ -105,7 +107,7 @@ blocks_shuffle(BLOCKS *bp) {
   off_t i;
 
   for (i = bp->s-1; i > 0; i--) {
-    off_t j = orand(i+1);
+    off_t j = off_rand(i+1);
     
     off_swap(&bp->v[i], &bp->v[j]);
   }
@@ -124,5 +126,5 @@ blocks_lookup(BLOCKS *bp,
     return bp->v[pos % bp->s] + b_offset * bp->s;
   }
   
-  return orand(max);
+  return off_rand(max);
 }

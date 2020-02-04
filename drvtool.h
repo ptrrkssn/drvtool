@@ -10,19 +10,14 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 
-#include "digest.h"
 #include "rate.h"
 #include "blocks.h"
+#include "digest.h"
+#include "transform.h"
 
 
 
 typedef unsigned char PATTERN[4];
-
-
-#define TRANSFORM_NONE 0
-#define TRANSFORM_XOR  1
-#define TRANSFORM_ROR  2
-#define TRANSFORM_ROL  3
 
 
 
@@ -95,13 +90,8 @@ typedef struct test {
   off_t b_start;       /* First block #               */
   off_t b_length;      /* Number of blocks            */
   off_t b_end;         /* Last+1 block #              */
-  
-  int transform;
-  union transform_txd {
-    unsigned char xor;
-    unsigned char ror;
-    unsigned char rol;
-  } txd;
+
+  TRANSFORM transform;
 
   struct {
     DIGEST data;

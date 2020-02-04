@@ -46,26 +46,27 @@
 #include <camlib.h>
 
 #include "drvtool.h"
+#include "strval.h"
 
 
 char *argv0 = "drvtool";
-char *version = "1.4.1";
+char *version = "1.4.2";
 
 long f_update_freq = 500;
 
 int f_yes        = 0;
 int f_ibase      = 0;
 int f_flush      = 0;
-int f_trim     = 0;
+int f_trim       = 0;
 int f_update     = 0;
 int f_verbose    = 0;
 int f_reverse    = 0;
 int f_debug      = 0;
 
-DIGEST_TYPE f_digest = DIGEST_TYPE_NONE;
+char *f_digest    = NULL;
+char *f_transform = NULL;
 
-
-int f_passes     = 2; /* loops, 0 = loop continously (forever, or until timeout*/
+int    f_passes  = 2; /* loops, 0 = loop continously (forever, or until timeout*/
 time_t f_timeout = 0; /* seconds, 0 = no time limit */
 
 BLOCKS *d_blocks = NULL;
@@ -99,52 +100,6 @@ PATTERN purge_patterns[NUM_PURGE_PATTERNS] =
 
 
 DRIVE *drives = NULL;
-
-void
-buf_xor(unsigned char *buf,
-	size_t bufsize,
-	int b) {
-  while (bufsize-- > 0)
-    *buf++ ^= b;
-}
-
-void
-buf_ror(unsigned char *buf,
-	size_t bufsize,
-	int b) {
-  unsigned char i, m, t;
-
-  m = 0;
-  for (i = 0; i < b; i++) {
-    m <<= 1;
-    m |= 0x01;
-  }
-  
-  while (bufsize-- > 0) {
-    t = (*buf & m) << (8-b);
-    *buf >>= b;
-    *buf++ |= t;
-  }
-}
-
-void
-buf_rol(unsigned char *buf,
-	size_t bufsize,
-	int b) {
-  unsigned char i, m, t;
-
-  m = 0;
-  for (i = 0; i < b; i++) {
-    m >>= 1;
-    m |= 0x80;
-  }
-  
-  while (bufsize-- > 0) {
-    t = (*buf & m) >> (8-b);
-    *buf <<= b;
-    *buf++ |= t;
-  }
-}
 
 
 char *
@@ -386,8 +341,15 @@ test_set_length(TEST *tp,
   if (length < 0)
     length += tp->b_total;
   
-  if (length < 0 || length+tp->b_start > tp->b_total)
+  if (length < 0) {
+    errno = EINVAL;
     return -1;
+  }
+  if (tp->b_start + length > tp->b_total) {
+    fprintf(stderr, "ERR: START=%ld, LEN=%ld, TOT=%ld\n", tp->b_start, length, tp->b_total);
+    errno = EOVERFLOW;
+    return -1;
+  }
   
   tp->b_length = length;
   tp->b_end    = tp->b_start + tp->b_length;
@@ -408,8 +370,6 @@ test_init(TEST *tp,
   tp->passes  = f_passes;
   tp->timeout = f_timeout;
 
-  tp->transform = 0;
-  
   tp->b_size  = dp->stripe_size;
   tp->b_total = dp->media_size / tp->b_size;
   
@@ -439,91 +399,13 @@ test_init(TEST *tp,
 }
 
 
-
-
-int
-str2off(const char *str,
-	off_t *vp,
-	int b1024,
-	const char **rest) {
-  off_t base = 1000;
-  char c, i;
-  int rc;
-  
-  
-  if (f_ibase || b1024)
-    base = 1024;
-  
-  c = i = 0;
-
-  if (str[0] == '0' && str[1] == 'x') {
-    rc = sscanf(str+2, "%lx%c%c", vp, &c, &i);
-    if (rc < 1)
-      return rc;
-    if (rest) {
-      *rest = str+2;
-      while (**rest && isxdigit(**rest))
-	++*rest;
-    }
-  } else {
-    rc = sscanf(str, "%ld%c%c", vp, &c, &i);
-    if (rc < 1)
-      return rc;
-    if (rest) {
-      *rest = str;
-      if (**rest == '-')
-	++*rest;
-      
-      while (**rest && isdigit(**rest))
-	++*rest;
-    }
-  }
-  
-  if (c && i == 'i')
-    base = 1024;
-  
-  switch (toupper(c)) {
-  case 'K':
-    *vp *= base;
-    break;
-    
-  case 'M':
-    *vp *= base*base;
-    break;
-    
-  case 'G':
-    *vp *= base*base*base;
-    break;
-    
-  case 'T':
-    *vp *= base*base*base*base;
-    break;
-    
-  case 'P':
-    *vp *= base*base*base*base;
-    break;
-
-  default:
-    return 1;
-  }
-  
-  if (rest) {
-    if (i == 'i')
-      ++*rest;
-    ++*rest;
-  }
-  
-  return 1;
-}
-
-
 int
 str2int(const char *str,
 	int *vp) {
   off_t ov;
   int rc;
 
-  rc = str2off(str, &ov, 0, NULL);
+  rc = str2off(&str, &ov);
   if (rc < 1)
     return rc;
 
@@ -540,39 +422,65 @@ str2int(const char *str,
 int
 str2bytes(const char *str,
 	  off_t *vp,
-	  int b1024,
 	  TEST *tp) {
-  const char *rest = NULL;
   DRIVE *dp = tp->drive;
+  off_t v, cv, hv, sv;
   int rc;
-  off_t v;
   
   
-  rc = str2off(str, vp, b1024, &rest);
+  rc = str2off(&str, vp);
   if (rc < 1)
     return rc;
 
-  if (!rest)
-    return rc;
-  
-  switch (toupper(*rest)) {
-  case 0:
-    break;
-
-  case '%':
-    *vp = (tp->b_total * tp->b_size * 100) / *vp;
-    break;
-    
-  case 'B':
+  switch (toupper(*str)) {
+  case 0: /* Blocks */
     *vp *= tp->b_size;
     break;
+
+  case '%': /* % of disk */
+    *vp = *vp * tp->b_total * tp->b_size / 100;
+    break;
+
+  case 'B': /* Bytes */
+    break;
+
+  case 'C': /* Cylinders (Tracks) */
+    if (!dp || !dp->fw_sectors) {
+      errno = EINVAL;
+      return -1;
+    }
+    *vp *= dp->sector_size * dp->fw_sectors;
+    break;
     
-  case 'N':
+  case 'N': /* Native sector size */
     *vp *= dp->stripe_size;
     break;
     
-  case 'S':
+  case 'S': /* (Emulated) Sector size */
     *vp *= dp->sector_size;
+    break;
+
+  case '/': /* Cylinders/Heads/Sectors */
+    cv = *vp;
+    if (!dp || !dp->fw_sectors) {
+      errno = EINVAL;
+      return -1;
+    }
+    ++str;
+    if (str2off(&str, &hv) != 1) {
+      errno = EINVAL;
+      return -1;
+    }
+    if (*str != '/') {
+      errno = EINVAL;
+      return -1;
+    }
+    ++str;
+    if (str2off(&str, &sv) != 1) {
+      errno = EINVAL;
+      return -1;
+    }
+    *vp = cv * hv * sv * dp->sector_size;
     break;
     
   default:
@@ -582,8 +490,15 @@ str2bytes(const char *str,
   if (!dp->flags.is_file) {
     /* Make sure it's a multiple of the sector size */
     v = *vp / dp->sector_size;
-    if (v * dp->sector_size != *vp)
+    if (v * dp->sector_size != *vp) {
+      errno = EINVAL;
       return -1;
+    }
+
+    if (*vp > dp->media_size) {
+      errno = EOVERFLOW;
+      return -1;
+    }
   }
 
   return 1;
@@ -592,31 +507,47 @@ str2bytes(const char *str,
 int
 str2blocks(const char *str,
 	   off_t *vp,
-	   int b1024,
 	   TEST *tp) {
-  const char *rest = NULL;
   int rc;
+  off_t b;
   
   
-  rc = str2off(str, vp, b1024, &rest);
+  rc = str2bytes(str, vp, tp);
   if (rc < 1)
     return rc;
 
-  if (!rest)
-    return rc;
-
-  switch (toupper(*rest)) {
-  case 0:
-    break;
-
-  case '%':
-    *vp = (tp->b_total * *vp) / 100;
-    break;
-    
-  default:
+  b = *vp / tp->b_size;
+  if (b * tp->b_size != *vp) {
+    errno = EINVAL;
     return -1;
   }
+
+  *vp = b;
+  return 1;
+}
+
+
+int
+blocks2chs(off_t b,
+	   off_t *cv,
+	   off_t *hv,
+	   off_t *sv,
+	   DRIVE *dp) {
+  if (!dp)
+    return 0;
+
+  if (!dp->fw_heads || !dp->fw_sectors || (dp->fw_heads == 255 && dp->fw_sectors == 63))
+    return 0;
   
+  *cv = b / (dp->fw_heads*dp->fw_sectors);
+  
+  b -= (*cv * dp->fw_heads*dp->fw_sectors);
+
+  *hv = b / dp->fw_sectors;
+  
+  b -= (*hv * dp->fw_sectors);
+  
+  *sv = b;
   return 1;
 }
 
@@ -835,10 +766,10 @@ drive_close(DRIVE *dp) {
 
 void
 drive_print(FILE *fp,
-	  int idx,
-	  DRIVE *dp) {
+	    int idx,
+	    DRIVE *dp,
+	    int verbose) {
   char b1[80], b2[80], b3[80];
-  
 
   if (idx)
     fprintf(fp, "  %4d.\t", idx);
@@ -870,7 +801,7 @@ drive_print(FILE *fp,
   
   putc('\n', fp);
 
-  if (f_verbose) {
+  if (verbose) {
     if (idx)
       putc('\t', fp);
     else {
@@ -884,12 +815,13 @@ drive_print(FILE *fp,
     if (dp->physical_path)
       fprintf(fp, "{%s} ", dp->physical_path);
 
-    if (f_verbose > 1)
+    if (verbose > 1)
       if (dp->fw_heads && dp->tracks && dp->fw_sectors)
-	fprintf(fp, "{%u heads, %u tracks/head, %u sectors/track} ",
-		dp->fw_heads,
+	fprintf(fp, "{%u/%u/%u C/H/S %s} ",
 		dp->tracks,
-		dp->fw_sectors);
+		dp->fw_heads,
+		dp->fw_sectors,
+		dp->fw_heads == 255 & dp->fw_sectors == 63 ? "(Simulated)" : "");
     
     putc('\n', fp);
   }
@@ -1084,7 +1016,7 @@ drives_print(int f_idx) {
   int i = 0;
   
   while (dp) {
-    drive_print(stdout, f_idx ? ++i : 0, dp);
+    drive_print(stdout, f_idx ? ++i : 0, dp, f_verbose);
     dp = dp->next;
   }
 }
@@ -1179,7 +1111,7 @@ test_pstatus(FILE *fp,
     fprintf(fp, " (%s left)",
 	    time2str(time_left, tbuf, sizeof(tbuf)));
 
-  fprintf(fp, "                     ");
+  fprintf(fp, "          ");
 }
 
 
@@ -1302,17 +1234,7 @@ test_seq(TEST *tp) {
 	}
       }
 
-      switch (tp->transform) {
-      case TRANSFORM_XOR:
-	buf_xor(tp->wbuf, tp->b_size, tp->txd.xor);
-	break;
-      case TRANSFORM_ROR:
-	buf_ror(tp->wbuf, tp->b_size, tp->txd.ror);
-	break;
-      case TRANSFORM_ROL:
-	buf_rol(tp->wbuf, tp->b_size, tp->txd.rol);
-	break;
-      }
+      transform_apply(&tp->transform, tp->wbuf, tp->b_size);
       
       if (tp->flags & TEST_WRITE) {
 	/* Write new test data */
@@ -1494,7 +1416,10 @@ test_seq(TEST *tp) {
       }
 
       test_pstatus(stderr, tp, &now, b, b_pos);
-      fputc('\r', stderr);
+      if (f_verbose)
+	fputc('\n', stderr);
+      else
+	fputc('\r', stderr);
     }
     
     tp->last_b_pos = b_pos;
@@ -1682,55 +1607,6 @@ prompt_yes(const char *msg,
 
 
 
-int
-str2transform(const char *s,
-	      union transform_txd *d) {
-  int v;
-
-  if (strcasecmp(s, "NONE") == 0)
-    return TRANSFORM_NONE;
-  
-  if (strncasecmp(s, "XOR", 3) == 0) {
-    s += 3;
-    if (*s == '-')
-      ++s;
-
-    v = 0xFF;
-    if (*s && str2int(s, &v) < 0)
-      return -1;
-    
-    d->xor = v;
-    return TRANSFORM_XOR;
-  }
-
-  if (strncasecmp(s, "ROR", 3) == 0) {
-    s += 3;
-    if (*s == '-')
-      ++s;
-
-    v = 1;
-    if (*s && str2int(s, &v) < 0)
-      return -1;
-    
-    d->xor = v;
-    return TRANSFORM_ROR;
-  }
-
-  if (strncasecmp(s, "ROL", 3) == 0) {
-    s += 3;
-    if (*s == '-')
-      ++s;
-
-    v = 1;
-    if (*s &&str2int(s, &v) < 0)
-      return -1;
-    
-    d->xor = v;
-    return TRANSFORM_ROL;
-  }
-
-  return -1;
-}
 
 
 int
@@ -1758,19 +1634,36 @@ int
 test_print_config(FILE *fp,
 		  TEST *tp) {
   char buf[80];
-
+  off_t c, h, s;
+  
   
   fprintf(fp, "TEST CONFIGURATION:\n");
 
-  fprintf(fp, "  Analyze entire drive?          %s\n", tp->b_length == tp->b_total ? "Yes" : "No");
+  fprintf(fp, "  Analyze entire drive?          %s\n",
+	  tp->b_length == tp->b_total ? "Yes" : "No");
+  
   if (tp->b_length != tp->b_total) {
-    fprintf(fp, "  Starting block number:         %ld\n", tp->b_start);
-    fprintf(fp, "  Ending block number:           %ld\n", tp->b_end-1);
+    
+    fprintf(fp, "  Starting block number:         %-8ld", tp->b_start);
+    if (f_verbose && blocks2chs(tp->b_start, &c, &h, &s, tp->drive) == 1)
+      fprintf(fp, " [%ld/%ld/%ld]", c, h, s);
+    putc('\n', fp);
+    
+    fprintf(fp, "  Ending block number:           %-8ld", tp->b_end-1);
+    if (f_verbose && blocks2chs(tp->b_end-1, &c, &h, &s, tp->drive) == 1)
+      fprintf(fp, " [%ld/%ld/%ld]", c, h, s);
+    putc('\n', fp);
   }
   
-  fprintf(fp, "  Number of blocks:              %ld (%sB)\n",
-	  tp->b_length,
+  fprintf(fp, "  Number of blocks:              %-8ld",
+	  tp->b_length);
+  
+  if (f_verbose && blocks2chs(tp->b_length, &c, &h, &s, tp->drive) == 1)
+    fprintf(fp, " [%ld/%ld/%ld]", c, h, s);
+  
+  fprintf(fp, " (%sB)", 
 	  int2str(tp->b_length * tp->b_size, buf, sizeof(buf), 0));
+  putc('\n', fp);
   
   fprintf(fp, "  Loop continously?              %s\n", tp->passes == 0 && tp->timeout == 0 ? "Yes" : "No");
   if (tp->passes)
@@ -1784,7 +1677,7 @@ test_print_config(FILE *fp,
   fprintf(fp, "  Use random bit patterns?       %s\n", tp->flags.random_patterns ? "Yes" : "No");
 #endif
   
-  fprintf(fp, "  Number of sectors per block:   %ld (%sB)\n",
+  fprintf(fp, "  Number of sectors per block:   %-8ld (%sB)\n",
 	  tp->b_size / tp->drive->sector_size,
 	  int2str(tp->b_size, buf, sizeof(buf), 0));
 #if 0
@@ -1845,7 +1738,7 @@ test_action(TEST *tp,
 
   } else if (strcmp(act, "current") == 0) {
 
-    drive_print(stdout, 0, tp->drive);
+    drive_print(stdout, 0, tp->drive, 2);
     return 0;
 
   } else if (strcmp(act, "digest") == 0) {
@@ -1989,13 +1882,13 @@ test_action(TEST *tp,
       if (tp->passes > 1)
 	printf("  Pass %u:\n", pass);
     }
-    
-    if (f_digest != DIGEST_TYPE_NONE)
+
+    if (f_digest)
       digest_init(&tp->digest.data, f_digest);
     
     rc = (*tstfun)(tp);
 
-    if (digest_typeof(&tp->digest.data) != DIGEST_TYPE_NONE) {
+    if (f_digest) {
       int dlen;
       
       dlen = digest_final(&tp->digest.data,
@@ -2064,8 +1957,6 @@ main(int argc,
   char *arg;
   time_t now;
 
-  char *s_digest = NULL;
-  char *s_transform = NULL;
   char *s_time = NULL;
   char *s_passes = NULL;
   char *s_start = NULL;
@@ -2124,25 +2015,20 @@ main(int argc,
 
       case 'D':
 	if (argv[i][j+1])
-	  s_digest = argv[i]+j+1;
+	  f_digest = argv[i]+j+1;
 	else if (argv[i+1])
-	  s_digest = argv[++i];
+	  f_digest = argv[++i];
 	else {
 	  fprintf(stderr, "%s: Error: -D: Missing digest type\n", argv0);
-	  exit(1);
-	}
-	f_digest = digest_str2type(s_digest);
-	if (f_digest < 0) {
-	  fprintf(stderr, "%s: Error: %s: Invalid digest type\n", argv0, s_digest);
 	  exit(1);
 	}
 	goto NextArg;
 	
       case 'X':
 	if (argv[i][j+1])
-	  s_transform = argv[i]+j+1;
+	  f_transform = argv[i]+j+1;
 	else if (argv[i+1])
-	  s_transform = argv[++i];
+	  f_transform = argv[++i];
 	else {
 	  fprintf(stderr, "%s: Error: -X: Missing transform type\n", argv0);
 	  exit(1);
@@ -2266,7 +2152,7 @@ main(int argc,
   if (s_bsize) {
     off_t v;
     
-    rc = str2bytes(s_bsize, &v, 1, &tst);
+    rc = str2bytes(s_bsize, &v, &tst);
     if (rc < 1 || test_set_bsize(&tst, v) < 0) {
       fprintf(stderr, "%s: Error: %s: Invalid block size\n",
 	      argv0, s_bsize);
@@ -2277,7 +2163,7 @@ main(int argc,
   if (s_start) {
     off_t v = 0;
     
-    rc = str2blocks(s_start, &v, 0, &tst);
+    rc = str2blocks(s_start, &v, &tst);
     if (rc < 1 || test_set_start(&tst, v) < 0) {
       fprintf(stderr, "%s: Error: %s: Invalid start block\n",
 	      argv0, s_start);
@@ -2292,11 +2178,11 @@ main(int argc,
       v = tst.b_total;
       rc = 1;
     } else
-      rc = str2blocks(s_length, &v, 0, &tst);
+      rc = str2blocks(s_length, &v, &tst);
     
     if (rc < 1 || test_set_length(&tst, v) < 0) {
-      fprintf(stderr, "%s: Error: %s: Invalid length\n",
-	      argv0, s_length);
+      fprintf(stderr, "%s: Error: %s: Invalid length (rc=%d): %s\n",
+	      argv0, s_length, rc, strerror(errno));
       exit(1);
     }
   }
@@ -2319,11 +2205,11 @@ main(int argc,
     }
   }
   
-  if (s_transform) {
-    tst.transform = str2transform(s_transform, &tst.txd);
-    if (tst.transform < 0) {
+  if (f_transform) {
+    transform_init(&tst.transform, f_transform);
+    if (tst.transform.type < 0) {
       fprintf(stderr, "%s: Error: %s: Invalid transform type\n",
-	      argv0, s_transform);
+	      argv0, f_transform);
       exit(1);
     }
   }
@@ -2331,7 +2217,7 @@ main(int argc,
   if (s_rsize) {
     off_t v = 0;
 
-    rc = str2off(s_rsize, &v, 0, NULL);
+    rc = str2off(&s_rsize, &v);
     if (rc < 1) {
       fprintf(stderr, "%s: Error: %s: Invalid shuffle-array size\n",
 	      argv0, s_rsize);
