@@ -1,7 +1,7 @@
 /*
- * buffer.h - Buffered I/O routines
+ * commands.h
  *
- * Copyright (c) 2016-2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,46 +31,36 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef BUFFER_H
-#define BUFFER_H 1
+#ifndef COMMANDS_H
+#define COMMANDS_H 1
 
-typedef struct buffer
-{
-    char *buf;
-    int len;
-    int size;
-} BUFFER;
+
+typedef struct command {
+  const char *name;
+  const char *args;
+  int (*handler)(int argc, char **argv, void *vp);
+  const char *help;
+} COMMAND;
+
+
+#define CMDS_MAX 256
+
+typedef struct commands {
+  size_t cc;
+  COMMAND *cv[CMDS_MAX];
+} COMMANDS;
 
 
 extern void
-buf_init(BUFFER *bp);
-
-extern void
-buf_clear(BUFFER *bp);
-
-extern BUFFER *
-buf_new(void);
-
-extern void
-buf_free(BUFFER *bp);
+cmd_init(COMMANDS *cp);
 
 extern int
-buf_putc(BUFFER *bp,
-	 char c);
+cmd_register(COMMANDS *cp, int c, COMMAND v[]);
 
 extern int
-buf_puts(BUFFER *bp,
-	 const char *s);
-
-
-extern char *
-buf_getall(BUFFER *bp);
+cmd_run(COMMANDS *cp, int argc, char **argv, void *vp);
 
 extern int
-buf_save(BUFFER *bp,
-	 FILE *fp);
+_cmd_help(COMMANDS *cp, const char *name);
 
-extern int
-buf_load(BUFFER *bp,
-	 FILE *fp);
 #endif

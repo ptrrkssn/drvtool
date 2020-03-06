@@ -1,7 +1,7 @@
 /*
- * buffer.h - Buffered I/O routines
+ * opts.h - Options parsing
  *
- * Copyright (c) 2016-2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2019-2020, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,46 +31,49 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef BUFFER_H
-#define BUFFER_H 1
+#ifndef OPTS_H
+#define OPTS_H 1
 
-typedef struct buffer
-{
-    char *buf;
-    int len;
-    int size;
-} BUFFER;
+#include <stdio.h>
+
+#define OPTS_TYPE_NONE 0x0000
+#define OPTS_TYPE_UINT 0x0001
+#define OPTS_TYPE_INT  0x0002
+#define OPTS_TYPE_STR  0x0004
+
+#define OPTS_TYPE_MASK 0x00ff
+
+#define OPTS_TYPE_OPT  0x0100
 
 
-extern void
-buf_init(BUFFER *bp);
-
-extern void
-buf_clear(BUFFER *bp);
-
-extern BUFFER *
-buf_new(void);
-
-extern void
-buf_free(BUFFER *bp);
-
-extern int
-buf_putc(BUFFER *bp,
-	 char c);
+typedef struct option {
+  const char *name;
+  char flag;
+  unsigned int type;
+  int (*handler)(const char *name, const char *vs, unsigned int type, void *vp, void *xp, const char *argv0);
+  const char *help;
+} OPTION;
 
 extern int
-buf_puts(BUFFER *bp,
-	 const char *s);
-
-
-extern char *
-buf_getall(BUFFER *bp);
+opts_print(OPTION *opts,
+	   FILE *fp);
 
 extern int
-buf_save(BUFFER *bp,
-	 FILE *fp);
+opts_parse_argv(OPTION *opts,
+		int argc,
+		char **argv,
+		void *xp);
 
 extern int
-buf_load(BUFFER *bp,
-	 FILE *fp);
+opts_set2(OPTION *opts,
+	  const char *name,
+	  const char *value,
+	  void *xp,
+	  const char *argv0);
+
+extern int
+opts_set(OPTION *opts,
+	 const char *varval,
+	 void *xp,
+	 const char *argv0);
 #endif

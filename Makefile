@@ -5,8 +5,8 @@ BINDEST=$(DEST)/bin
 
 PGM=drvtool
 OBJS=drvtool.o buffer.o rate.o blocks.o digest.o transform.o seq.o strval.o
-CFLAGS=-Wall -g -O
-LIBS=-lcam -lmd -lz
+CFLAGS=-Wall -g -O -I/usr/local/include
+LIBS=-L/usr/local/lib -lreadline -lcam -lmd -lz
 
 all: $(PGM) tests/seq-test
 

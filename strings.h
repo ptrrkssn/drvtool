@@ -1,7 +1,7 @@
 /*
- * buffer.h - Buffered I/O routines
+ * strings.h
  *
- * Copyright (c) 2016-2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,46 +31,33 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef BUFFER_H
-#define BUFFER_H 1
+#ifndef STRINGS_H
+#define STRINGS_H 1
 
-typedef struct buffer
-{
-    char *buf;
-    int len;
-    int size;
-} BUFFER;
-
-
-extern void
-buf_init(BUFFER *bp);
-
-extern void
-buf_clear(BUFFER *bp);
-
-extern BUFFER *
-buf_new(void);
-
-extern void
-buf_free(BUFFER *bp);
-
-extern int
-buf_putc(BUFFER *bp,
-	 char c);
-
-extern int
-buf_puts(BUFFER *bp,
-	 const char *s);
+#include <sys/types.h>
 
 
 extern char *
-buf_getall(BUFFER *bp);
+s_ndup(const char *s,
+       size_t len);
+
+extern char *
+s_dup(const char *s);
+
+extern char *
+s_cat(const char *s,
+      ...);
 
 extern int
-buf_save(BUFFER *bp,
-	 FILE *fp);
+s_match(const char *a,
+	const char *b);
 
 extern int
-buf_load(BUFFER *bp,
-	 FILE *fp);
+s_nmatch(const char *a,
+	 const char *b,
+	 size_t len);
+
+extern int
+s_trim(char *s);
+
 #endif

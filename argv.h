@@ -1,7 +1,7 @@
 /*
- * buffer.h - Buffered I/O routines
+ * argv.h - Argv-like generating routines
  *
- * Copyright (c) 2016-2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2019-2020, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,46 +31,30 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef BUFFER_H
-#define BUFFER_H 1
-
-typedef struct buffer
-{
-    char *buf;
-    int len;
-    int size;
-} BUFFER;
-
-
-extern void
-buf_init(BUFFER *bp);
-
-extern void
-buf_clear(BUFFER *bp);
-
-extern BUFFER *
-buf_new(void);
-
-extern void
-buf_free(BUFFER *bp);
-
-extern int
-buf_putc(BUFFER *bp,
-	 char c);
-
-extern int
-buf_puts(BUFFER *bp,
-	 const char *s);
-
+#ifndef ARGV_H
+#define ARGV_H 1
 
 extern char *
-buf_getall(BUFFER *bp);
+argv_get(char **argv,
+	 int idx);
+
+extern char *
+argv_getm(char **argv,
+	  int start,
+	  int stop);
+
+extern char *
+argv_strtok(const char **bp,
+	    char *(*escape_handler)(const char *escape, void *xtra),
+	    void *xtra);
 
 extern int
-buf_save(BUFFER *bp,
-	 FILE *fp);
+argv_create(const char *command,
+	    char *(*escape_handler)(const char *escape, void *xtra),
+	    void *xtra,
+	    char ***argv);
 
-extern int
-buf_load(BUFFER *bp,
-	 FILE *fp);
+extern void
+argv_destroy(char **argv);
+
 #endif

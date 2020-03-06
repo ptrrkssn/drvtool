@@ -45,6 +45,9 @@
 #include <sys/sysctl.h>
 #include <camlib.h>
 
+#include <readline/readline.h>
+#include <readline/history.h>
+
 #include "drvtool.h"
 #include "strval.h"
 
@@ -1535,7 +1538,7 @@ act_help(FILE *fp) {
   fprintf(fp, "    to the way they operate (with remapping of blocks for wear levelling)\n");
   fprintf(fp, "    you will not test what you intend and instead just make them fail faster.\n\n");
   fprintf(fp, "  - Beware that the Shuffle (-R with size > 0) option allocates a lot of RAM,\n");
-  fprintf(fp, "    typically 8 bytes times the number of blocks of the device. One the other hand\n");
+  fprintf(fp, "    typically 8 bytes times the number of blocks of the device. On the other hand\n");
   fprintf(fp, "    it guarantees that all blocks in the requested range will be visited.\n");
 }
 
@@ -2233,20 +2236,28 @@ main(int argc,
   }
 
   if (i == argc) {
-    char buf[256], *bp, *act;
+    char *buf, *bp, *act;
 
     do {
+      char pbuf[80], *prompt, *cp;
 
-      if (isatty(fileno(stdin)))
-	fprintf(stderr, "\n[%s]> ", tst.drive->name);
       
-      if (fgets(buf, sizeof(buf), stdin) == NULL)
-	exit(1);
+      if (isatty(fileno(stdin))) {
+	sprintf(pbuf, "[%s]> ", tst.drive->name);
+	prompt = pbuf;
+      } else
+	prompt = NULL;
+      
+      buf = readline(prompt);
+      if (!buf)
+	exit(0);
+      
+      add_history(buf);
       
       bp = strtrim(buf);
       if (!*bp || *bp == '#')
 	continue;
-
+      
       if (*bp == '!') {
 	system(bp+1);
 	continue;
