@@ -276,7 +276,7 @@ test_set_bsize(TEST *tp,
 	       off_t bsize) {
   DRIVE *dev;
   off_t ns, tb, o_start, o_length;
-
+  off_t d;
   
   if (!tp || !tp->drive)
     return -1;
@@ -296,11 +296,17 @@ test_set_bsize(TEST *tp,
     /* Make sure block size is a multiple of the sector size */
     ns = bsize / dev->sector_size;
     if (ns * dev->sector_size != bsize)
-      return -1;
-    
+      return -2;
+
     /* Make sure block size and total media size is compatible */
-    if (tb * bsize != dev->media_size)
-      return -1;
+    d = dev->media_size - tb * bsize;
+    if (d) {
+      fprintf(stderr, "%s: Warning: Block Size and Media Size mismatch by %ld bytes\n",
+	      argv0, d);
+#if 0
+      return -3;
+#endif
+    }
   }
   
   tp->b_size  = bsize;
@@ -2154,11 +2160,12 @@ main(int argc,
   
   if (s_bsize) {
     off_t v;
+    int ec = 0;
     
     rc = str2bytes(s_bsize, &v, &tst);
-    if (rc < 1 || test_set_bsize(&tst, v) < 0) {
-      fprintf(stderr, "%s: Error: %s: Invalid block size\n",
-	      argv0, s_bsize);
+    if (rc < 1 || (ec = test_set_bsize(&tst, v)) < 0) {
+      fprintf(stderr, "%s: Error: %s: Invalid block size [rc=%d, ec=%d, errno=%d]\n",
+	      argv0, s_bsize, rc, ec, errno);
       exit(1);
     }
   }
@@ -2239,7 +2246,7 @@ main(int argc,
     char *buf, *bp, *act;
 
     do {
-      char pbuf[80], *prompt, *cp;
+      char pbuf[80], *prompt;
 
       
       if (isatty(fileno(stdin))) {
