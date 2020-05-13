@@ -54,6 +54,9 @@ typedef struct drive {
   
   struct {
     char *path;
+    char *vendor;
+    char *product;
+    char *revision;
   } cam;
 
   struct drive *next;

@@ -781,11 +781,17 @@ drive_print(FILE *fp,
   char b1[80], b2[80], b3[80];
 
   if (idx)
-    fprintf(fp, "  %4d.\t", idx);
+    fprintf(fp, "%5d. ", idx);
   else
-    fprintf(fp, "  ");
+    fprintf(fp, "%5s  ", "");
   
   fprintf(fp, "%-6s", dp->name);
+
+  fprintf(fp, " : %8s %16s %4s",
+	  dp->cam.vendor ? dp->cam.vendor : "",
+	  dp->cam.product ? dp->cam.product : "",
+	  dp->cam.revision ? dp->cam.revision : "");
+  
   fprintf(fp, " : %-20s", dp->ident ? dp->ident : "");
 
   int2str(dp->stripe_size, b1, sizeof(b1), 2);
@@ -799,7 +805,7 @@ drive_print(FILE *fp,
   
   fprintf(fp, " : %6sB : %6s sectors @ %-12s :",
 	  int2str(dp->media_size, b2, sizeof(b2), 0),
-	  int2str(dp->sectors, b3, sizeof(b3), 0),
+	  int2str(dp->media_size / dp->stripe_size, b3, sizeof(b3), 0),
 	  b1);
   
   if (dp->flags.is_file)
@@ -957,6 +963,11 @@ drive_open(const char *name) {
 	     cam->sim_name, cam->sim_unit_number, cam->bus_id,
 	     cam->path_id, cam->target_id, cam->target_lun);
     dp->cam.path = strdup(buf);
+
+    dp->cam.vendor   = strndup(cam->inq_data.vendor, 8);
+    dp->cam.product  = strndup(cam->inq_data.product, 16);
+    dp->cam.revision = strndup(cam->inq_data.revision, 4);
+    
     cam_close_device(cam);
   }
 
