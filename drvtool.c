@@ -44,6 +44,7 @@
 #include <sys/errno.h>
 #include <sys/sysctl.h>
 #include <camlib.h>
+#include <dev/nvme/nvme.h>
 
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -55,7 +56,7 @@
 
 
 char *argv0 = "drvtool";
-char *version = "1.4.2";
+char *version = "1.5";
 
 long f_update_freq = 500;
 
@@ -160,6 +161,75 @@ pattern_fill(unsigned char *buf,
 }
 
 
+
+int
+drive_nvme_getinfo(DRIVE *dp,
+		   const char *path) {
+  struct nvme_pt_command pt;
+  struct nvme_controller_data cdata;
+  char *cp;
+  int fd, i;
+  char pbuf[1024];
+
+
+  if (sscanf(path, "/dev/nvd%d", &i) == 1) {
+    sprintf(pbuf, "/dev/nvme%d", i);
+    path = pbuf;
+  }
+
+  fd = open(path, O_RDWR);
+  if (fd < 0) {
+    fprintf(stderr, "open:%s:%s\n", path, strerror(errno));
+    return -1;
+  }
+  
+  memset(&pt, 0, sizeof(pt));
+  pt.cmd.opc = NVME_OPC_IDENTIFY;
+  pt.cmd.cdw10 = 1;
+  pt.buf = &cdata;
+  pt.len = sizeof(cdata);
+  pt.is_read = 1;
+  
+  if (ioctl(fd, NVME_PASSTHROUGH_CMD, &pt) < 0)
+    return -2;
+  
+  if (nvme_completion_is_error(&pt.cpl))
+    return -3;
+
+  for (i = 0; i < NVME_MODEL_NUMBER_LENGTH && isspace(((const char*)cdata.mn)[i]); i++)
+    ;
+  dp->vendor = strndup(((const char*)cdata.mn)+i, NVME_MODEL_NUMBER_LENGTH-i);
+  cp = strchr(dp->vendor, ' ');
+  if (cp) {
+    *cp++ = '\0';
+    while (*cp && isspace(*cp))
+      ++cp;
+    dp->product = strdup(cp);
+  } else
+    dp->product = strdup("");
+  for (i = strlen(dp->product)-1; i >= 0 && isspace(dp->product[i]); i--)
+    ;
+  dp->product[i+1] = '\0';
+  
+  for (i = 0; i < NVME_FIRMWARE_REVISION_LENGTH && isspace(((const char *)cdata.fr)[i]); i++)
+    ;
+  dp->revision = strndup((const char *) cdata.fr+i, NVME_FIRMWARE_REVISION_LENGTH-i);
+  for (i = strlen(dp->revision)-1; i >= 0 && isspace(dp->revision[i]); i--)
+    ;
+  dp->revision[i+1] = '\0';
+  
+  for (i = 0; i < NVME_SERIAL_NUMBER_LENGTH && isspace(((const char *)cdata.sn)[i]); i++)
+    ;
+  dp->ident = strndup((const char *) cdata.sn+i, NVME_SERIAL_NUMBER_LENGTH-i);
+  for (i = strlen(dp->ident)-1; i >= 0 && isspace(dp->ident[i]); i--)
+    ;
+  dp->ident[i+1] = '\0';
+  
+  close(fd);
+
+  dp->flags.is_ssd = 1;
+  return 0;
+}
 
 
 int
@@ -785,16 +855,16 @@ drive_print(FILE *fp,
 
   
   if (idx)
-    fprintf(fp, "%5d. ", idx);
+    fprintf(fp, "%3d. ", idx);
   else
-    fprintf(fp, "%5s  ", "");
+    fprintf(fp, "%3s  ", "");
   
-  fprintf(fp, "%-6s", dp->name);
+  fprintf(fp, "%-4s", dp->name);
 
-  fprintf(fp, " : %8s %16s %4s",
-	  dp->cam.vendor ? dp->cam.vendor : "",
-	  dp->cam.product ? dp->cam.product : "",
-	  dp->cam.revision ? dp->cam.revision : "");
+  fprintf(fp, " : %-8s %-16s %-8s",
+	  dp->vendor ? dp->vendor : "",
+	  dp->product ? dp->product : "",
+	  dp->revision ? dp->revision : "");
   
   fprintf(fp, " : %-20s", dp->ident ? dp->ident : "");
 
@@ -828,7 +898,7 @@ drive_print(FILE *fp,
   putc('\n', fp);
 
   if (verbose) {
-    fprintf(fp, "%13s : ", "");
+    fprintf(fp, "%11s : ", "");
     
     if (dp->cam.path)
       fprintf(fp, "%s ", dp->cam.path);
@@ -856,11 +926,13 @@ DRIVE *
 drive_open(const char *name) {
   char pnbuf[MAXPATHLEN];
   char idbuf[DISK_IDENT_SIZE];
-  int s_errno;
+  int s_errno, rc;
   DRIVE *dp;
   int is_rotating = -1;
   size_t isrs = sizeof(is_rotating);
   struct cam_device *cam;
+  char *cp;
+  
   
   dp = malloc(sizeof(*dp));
   if (!dp)
@@ -962,6 +1034,10 @@ drive_open(const char *name) {
       goto Fail;
   }
 
+  rc = drive_nvme_getinfo(dp, dp->path);
+  if (rc < 0)
+    fprintf(stderr, "Error getting nvme data: %d\n", rc);
+  
   cam = cam_open_device(dp->path, O_RDWR);
   if (cam) {
     char buf[256];
@@ -971,9 +1047,18 @@ drive_open(const char *name) {
 	     cam->path_id, cam->target_id, cam->target_lun);
     dp->cam.path = strdup(buf);
 
-    dp->cam.vendor   = strndup(cam->inq_data.vendor, 8);
-    dp->cam.product  = strndup(cam->inq_data.product, 16);
-    dp->cam.revision = strndup(cam->inq_data.revision, 4);
+    dp->vendor   = strndup(cam->inq_data.vendor, 8);
+    cp = strchr(dp->vendor, ' ');
+    if (cp)
+      *cp = '\0';
+    dp->product  = strndup(cam->inq_data.product, 16);
+    cp = strchr(dp->product, ' ');
+    if (cp)
+      *cp = '\0';
+    dp->revision = strndup(cam->inq_data.revision, 4);
+    cp = strchr(dp->revision, ' ');
+    if (cp)
+      *cp = '\0';
     
     cam_close_device(cam);
   }
@@ -1077,7 +1162,7 @@ drive_select(const char *name) {
 
   do {
     if (!name) {
-      fprintf(stderr, "Specify drive (enter it's number or name): ");
+      fprintf(stderr, "Specify drive (number or name): ");
       if (fgets(buf, sizeof(buf), stdin) == NULL)
 	exit(1);
       name = strtrim(buf);

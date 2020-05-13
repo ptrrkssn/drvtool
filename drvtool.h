@@ -48,15 +48,15 @@ typedef struct drive {
   
   off_t front_reserved;
   
+  char *physical_path;
   char *provider_name;
   char *ident;
-  char *physical_path;
+  char *vendor;
+  char *product;
+  char *revision;
   
   struct {
     char *path;
-    char *vendor;
-    char *product;
-    char *revision;
   } cam;
 
   struct drive *next;
