@@ -48,6 +48,8 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+#include <sys/ioctl.h>
+
 #include "drvtool.h"
 #include "strval.h"
 
@@ -779,7 +781,9 @@ drive_print(FILE *fp,
 	    DRIVE *dp,
 	    int verbose) {
   char b1[80], b2[80], b3[80];
+  struct winsize w;
 
+  
   if (idx)
     fprintf(fp, "%5d. ", idx);
   else
@@ -803,26 +807,28 @@ drive_print(FILE *fp,
     strcat(b1, "e");
   }
   
-  fprintf(fp, " : %6sB : %6s sectors @ %-12s :",
-	  int2str(dp->media_size, b2, sizeof(b2), 0),
-	  int2str(dp->media_size / dp->stripe_size, b3, sizeof(b3), 0),
-	  b1);
+  fprintf(fp, " : %6sB",
+	  int2str(dp->media_size, b2, sizeof(b2), 0));
   
-  if (dp->flags.is_file)
-    fprintf(fp, " FILE");
-  
-  if (dp->flags.is_ssd)
-    fprintf(fp, " SSD");
-  
+  if (ioctl(1, TIOCGWINSZ, &w) == 0 && w.ws_col > 110) {
+    fprintf(fp, " : %6s sectors @ %-12s",
+	    int2str(dp->media_size / dp->stripe_size, b3, sizeof(b3), 0),
+	    b1);
+    
+    if (w.ws_col > 117) {
+      fprintf(fp, " :");
+      
+      if (dp->flags.is_file)
+	fprintf(fp, " FILE");
+      
+      if (dp->flags.is_ssd)
+	fprintf(fp, " SSD");
+    }
+  }
   putc('\n', fp);
 
   if (verbose) {
-    if (idx)
-      putc('\t', fp);
-    else {
-      putc(' ', fp);
-      putc(' ', fp);
-    }
+    fprintf(fp, "%13s : ", "");
     
     if (dp->cam.path)
       fprintf(fp, "%s ", dp->cam.path);
@@ -838,6 +844,7 @@ drive_print(FILE *fp,
 		dp->fw_sectors,
 		dp->fw_heads == 255 & dp->fw_sectors == 63 ? "(Simulated)" : "");
     
+    putc('\n', fp);
     putc('\n', fp);
   }
 }
