@@ -2245,7 +2245,7 @@ main(int argc,
   if (s_rsize) {
     off_t v = 0;
 
-    rc = str2off(&s_rsize, &v);
+    rc = str2off((const char **) &s_rsize, &v);
     if (rc < 1) {
       fprintf(stderr, "%s: Error: %s: Invalid shuffle-array size\n",
 	      argv0, s_rsize);
