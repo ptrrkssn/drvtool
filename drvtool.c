@@ -912,7 +912,7 @@ drive_print(FILE *fp,
 		dp->tracks,
 		dp->fw_heads,
 		dp->fw_sectors,
-		dp->fw_heads == 255 & dp->fw_sectors == 63 ? "(Simulated)" : "");
+		(dp->fw_heads == 255 && dp->fw_sectors == 63) ? "(Simulated)" : "");
     
     putc('\n', fp);
     putc('\n', fp);
@@ -1002,9 +1002,11 @@ drive_open(const char *name) {
   dp->tracks = 0;
   if (dp->fw_heads && dp->fw_sectors && dp->stripe_size)
     dp->tracks = dp->media_size / (dp->fw_heads * dp->fw_sectors * dp->stripe_size);
-  
+
+#ifdef DIOCFFRONTSTUFF
   dp->front_reserved = 0;
   (void) ioctl(dp->fd, DIOCGFRONTSTUFF, &dp->front_reserved);
+#endif
   
   dp->provider_name = NULL;
   pnbuf[0] = '\0';
@@ -1034,9 +1036,11 @@ drive_open(const char *name) {
       goto Fail;
   }
 
+#if 0
   rc = drive_nvme_getinfo(dp, dp->path);
   if (rc < 0)
-    fprintf(stderr, "Error getting nvme data: %d\n", rc);
+    fprintf(stderr, "%s: Error: %s: Getting nvme data: %d\n", argv0, dp->path, rc);
+#endif
   
   cam = cam_open_device(dp->path, O_RDWR);
   if (cam) {

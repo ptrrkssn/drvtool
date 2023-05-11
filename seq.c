@@ -219,7 +219,10 @@ seq_destroy(SEQ *sp) {
 int
 seq_splice(SEQ *a,
 	   SEQ *b) {
-  SEQ *al, *bl, *an, *ap, *bn, *bp;
+#if 0
+  SEQ *al, *ap;
+#endif
+  SEQ *bl, *an, *bn, *bp;
 
   
   if (!a || !b || a == b) {
@@ -231,7 +234,9 @@ seq_splice(SEQ *a,
   }
 
   an = a->next;
+#if 0
   ap = a->prev;
+#endif
   bn = b->next;
   bp = b->prev;
   
@@ -264,8 +269,10 @@ seq_splice(SEQ *a,
     
     return 0;
   }
-  
+
+#if 0
   al = a->prev;
+#endif
   an = a->next;
   bl = b->prev;
   bn = b->next;
