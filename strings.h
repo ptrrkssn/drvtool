@@ -36,6 +36,26 @@
 
 #include <sys/types.h>
 
+typedef struct slist {
+  size_t c;
+  size_t s;
+  char **v;
+} SLIST;
+
+extern SLIST *
+slist_new(size_t size);
+
+extern int
+slist_add(SLIST *sp,
+	  char *s);
+
+extern void
+slist_free(SLIST *sp);
+
+extern char *
+slist_join(SLIST *sp,
+	   const char *delim);
+
 
 extern char *
 s_ndup(const char *s,
@@ -43,10 +63,6 @@ s_ndup(const char *s,
 
 extern char *
 s_dup(const char *s);
-
-extern char *
-s_cat(const char *s,
-      ...);
 
 extern int
 s_match(const char *a,
@@ -59,5 +75,41 @@ s_nmatch(const char *a,
 
 extern int
 s_trim(char *s);
+
+extern char *
+s_dupcat(const char *str,
+	 ...);
+
+extern int
+s_getint(int *ip,
+	 char **spp);
+
+extern int
+s_sepint(int *ip,
+	 char **spp,
+	 char *delim);
+
+
+extern int
+s_cpy(char *dst,
+      size_t dstsize,
+      const char *src);
+
+extern int
+s_ncpy(char *dst,
+       size_t dstsize,
+       const char *src,
+       size_t len);
+
+extern int
+s_cat(char *dst,
+      size_t dstsize,
+      const char *src);
+
+extern int
+s_ncat(char *dst,
+       size_t dstsize,
+       const char *src,
+       size_t len);
 
 #endif

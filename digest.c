@@ -43,10 +43,11 @@ DIGEST_TYPE
 digest_str2type(const char *s) {
   if (strcasecmp(s, "NONE") == 0)
     return DIGEST_TYPE_NONE;
-  
+
+#if HAVE_ADLER32
   if (strcasecmp(s, "ADLER32") == 0 || strcasecmp(s, "ADLER-32") == 0)
     return DIGEST_TYPE_ADLER32;
-
+#endif
   if (strcasecmp(s, "CRC32") == 0 || strcasecmp(s, "CRC-32") == 0)
     return DIGEST_TYPE_CRC32;
 
@@ -75,9 +76,10 @@ digest_type2str(DIGEST_TYPE type) {
   case DIGEST_TYPE_NONE:
     return "NONE";
 
+#if HAVE_ADLER32
   case DIGEST_TYPE_ADLER32:
     return "ADLER32";
-
+#endif
   case DIGEST_TYPE_CRC32:
     return "CRC32";
 
@@ -118,13 +120,15 @@ digest_init(DIGEST *dp,
   switch (dp->type) {
   case DIGEST_TYPE_NONE:
     break;
-    
+
+#if HAVE_ADLER32
   case DIGEST_TYPE_ADLER32:
-    dp->ctx.crc32 = adler32_z(0L, NULL, 0);
+    dp->ctx.adler32 = adler32_z(0L, NULL, 0);
     break;
+#endif
     
   case DIGEST_TYPE_CRC32:
-    dp->ctx.adler32 = crc32_z(0L, NULL, 0);
+    dp->ctx.crc32 = crc32_z(0L, NULL, 0);
     break;
     
   case DIGEST_TYPE_MD5:
@@ -170,12 +174,13 @@ digest_update(DIGEST *dp,
   case DIGEST_STATE_INIT:
   case DIGEST_STATE_UPDATE:
     switch (dp->type) {
+#if HAVE_ADLER32
     case DIGEST_TYPE_ADLER32:
       dp->ctx.adler32 = adler32_z(dp->ctx.adler32, buf, bufsize);
       break;
-      
+#endif
     case DIGEST_TYPE_CRC32:
-      dp->ctx.adler32 = crc32_z(dp->ctx.crc32, buf, bufsize);
+      dp->ctx.crc32 = crc32_z(dp->ctx.crc32, buf, bufsize);
       break;
       
     case DIGEST_TYPE_MD5:
@@ -230,7 +235,7 @@ digest_final(DIGEST *dp,
     case DIGEST_TYPE_NONE:
       rlen = 0;
       break;
-      
+#if HAVE_ADLER32
     case DIGEST_TYPE_ADLER32:
       if (bufsize < DIGEST_BUFSIZE_ADLER32) {
 	errno = EOVERFLOW;
@@ -239,7 +244,7 @@ digest_final(DIGEST *dp,
       * (uint32_t *) buf = htonl(dp->ctx.adler32);
       rlen = DIGEST_BUFSIZE_ADLER32;
       break;
-      
+#endif
     case DIGEST_TYPE_CRC32:
       if (bufsize < DIGEST_BUFSIZE_CRC32) {
 	errno = EOVERFLOW;

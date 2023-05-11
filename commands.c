@@ -1,5 +1,5 @@
 /*
- * aclcmds.c - ACL commands
+ * commands.c - commands
  *
  * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
  *
@@ -31,99 +31,131 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "config.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
-#include "misc.h"
-#include "strings.h"
 #include "commands.h"
 
+#include "error.h"
+#include "strings.h"
 
-void
-cmd_init(COMMANDS *cp) {
-  cp->cc = 0;
+
+/* For 'argv0' and 'global_options' */
+#include "drvtool.h"
+
+
+static COMMANDS global_commands;
+
+
+int
+cmd_init(COMMANDS *cmdlist) {
+  if (!cmdlist)
+    cmdlist = &global_commands;
+  
+  cmdlist->c = 0;
+  return 0;
+}
+
+
+static int
+_cmp_cmdname(const void *a, const void *b) {
+  COMMAND *ca, *cb;
+
+  ca = *(COMMAND **) a;
+  cb = *(COMMAND **) b;
+
+  return strcmp(ca->name, cb->name);
 }
 
 
 int
-cmd_register(COMMANDS *cp,
-	     int cc,
-	     COMMAND cv[]) {
-  int i;
-
+cmd_register(COMMANDS *cmdlist,
+	     COMMAND **cpp) {
+  if (!cpp)
+    return -1;
   
-  for (i = 0; cc ? i < cc : cv[i].name != NULL; i++) {
-    if (cp->cc >= CMDS_MAX)
+  if (!cmdlist)
+    cmdlist = &global_commands;
+  
+  for (; *cpp; ++cpp) {
+    if (cmdlist->c >= MAXCMDS)
       return -1;
-
-    cp->cv[cp->cc++] = &cv[i];
+    
+    cmdlist->v[cmdlist->c++] = *cpp;
   }
 
-  return cp->cc;
-}
+  qsort(&cmdlist->v[0], cmdlist->c, sizeof(cmdlist->v[0]), _cmp_cmdname);
 
-
-int
-_cmd_help(COMMANDS *cmds,
-	  const char *name) {
-  int i, nm;
-  COMMAND *cp;
-
-  
-  puts("COMMANDS:");
-  
-  if (name) {
-    cp = NULL;
-    nm = 0;
-
-    for (i = 0; i < cmds->cc; i++) {
-      if (s_match(name, cmds->cv[i]->name)) {
-	cp = cmds->cv[i];
-	printf("  %-20s\t%-30s\t%s\n", cp->name, cp->args, cp->help);
-	++nm;
-      }
-    }
-    
-    if (nm < 1) {
-      fprintf(stderr, "%s: No such command\n", name);
-      return -1;
-    }
-    
-  } else {
-    
-    for (i = 0; i < cmds->cc; i++) {
-      cp = cmds->cv[i];
-      printf("  %-20s\t%-30s\t%s\n", cp->name, cp->args, cp->help);
-    }
-  }
-  
   return 0;
 }
 
 
 int
-cmd_run(COMMANDS *cmds,
+cmd_help(COMMANDS *cmdlist,
+	 const char *name,
+	 FILE *fp,
+	 int p_opts) {
+  int nm, i;
+
+  
+  if (name) {
+    COMMAND *cp = NULL;
+    nm = 0;
+
+    for (i = 0; i < cmdlist->c; i++) {
+      cp = cmdlist->v[i];
+      if (s_match(name, cp->name)) {
+	if (!nm)
+	  fprintf(fp, "COMMANDS:\n");
+	fprintf(fp, "  %-20s\t%-30s\t%s\n", cp->name, cp->args, cp->help);
+	if (p_opts)
+	  opts_print(fp, global_options, cp->options, NULL);
+	++nm;
+      }
+    }
+
+    if (nm > 0)
+      return -1;
+  } 
+
+  fprintf(fp, "COMMANDS:\n");
+  for (i = 0; i < cmdlist->c; i++) {
+    COMMAND *cp;
+    
+    cp = cmdlist->v[i];
+    fprintf(fp, "  %-20s\t%-30s\t%s\n", cp->name, cp->args, cp->help);
+  }
+  
+  return -1;
+}
+
+
+
+int
+cmd_run(COMMANDS *cmdlist,
 	int argc,
-	char *argv[],
-	void *vp) {
-  int i, nm;
+	char *argv[]) {
+  int i, j, nm;
   COMMAND *scp;
+  char *tmp_a0;
 
-
+  
   if (!argv[0])
     return 0;
   
   if (strcmp(argv[0], "?") == 0)
-    return _cmd_help(cmds, argv[1]);
+    return cmd_help(cmdlist, argv[1], stdout, 0);
   else if (argv[1] && strcmp(argv[1], "?") == 0)
-    return _cmd_help(cmds, argv[0]);
+    return cmd_help(cmdlist, argv[0], stdout, 1);
   
   nm = 0;
   scp = NULL;
-  for (i = 0; i < cmds->cc; i++) {
-    COMMAND *cp = cmds->cv[i];
+  for (i = 0; i < cmdlist->c; i++) {
+    COMMAND *cp = cmdlist->v[i];
     
     if (s_match(argv[0], cp->name)) {
       scp = cp;
@@ -131,17 +163,33 @@ cmd_run(COMMANDS *cmds,
     }
   }
   
-  if (nm < 1) {
-    fprintf(stderr, "Error: %s: No such command\n", argv[0]);
-    return -1;
-  }
+  if (nm < 1)
+    error(1, 0, "%s: Unknown command", argv[0]);
 
-  if (nm > 1) {
-    fprintf(stderr, "Error: %s: Matches multiple commands\n", argv[0]);
-    return -1;
-  }
+  if (nm > 1)
+    error(1, 0, "%s: Nonunique command", argv[0]);
 
+  tmp_a0 = argv[0];
+  argv[0] = s_dup(scp->name);
+
+  if (error_argv0)
+    free(error_argv0);
   
-  return (*scp->handler)(argc, argv, vp);
+  error_argv0 = s_dupcat(argv0, " ", argv[0], NULL);
+
+  i = opts_parse_argv(argc, argv, global_options, scp->options, NULL);
+
+  free(argv[0]);
+  argv[0] = tmp_a0;
+  
+  if (i < 0)
+    return i;
+  for (j = 1; i < argc; i++, j++)
+    argv[j] = argv[i];
+  argv[j] = NULL;
+  argc = j;
+
+  return (*scp->handler)(argc, argv);
 }
+
 

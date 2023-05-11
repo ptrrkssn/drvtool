@@ -1,5 +1,5 @@
 /*
- * commands.h
+ * error.h
  *
  * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
  *
@@ -31,38 +31,21 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef COMMANDS_H
-#define COMMANDS_H 1
+#ifndef ERROR_H
+#define ERROR_H 1
 
-#include "opts.h"
+#include <setjmp.h>
 
-typedef struct command {
-  const char *name;
-  int (*handler)(int argc, char **argv);
-  OPTION *options;
-  const char *args;
-  const char *help;
-} COMMAND;
+extern char *error_argv0;
+extern jmp_buf error_env;
 
-
-#define MAXCMDS 1024
-
-typedef struct commands {
-  int c;
-  COMMAND *v[MAXCMDS];
-} COMMANDS;
-
+#define error_catch(save_env)		(memcpy(save_env, error_env, sizeof(jmp_buf)), setjmp(error_env))
+#define error_return(rc, save_env) 	do { memcpy(error_env, save_env, sizeof(jmp_buf)); return rc; } while(0)
 
 extern int
-cmd_init(COMMANDS *cp);
-
-extern int
-cmd_register(COMMANDS *cp, COMMAND **v);
-
-extern int
-cmd_run(COMMANDS *cp, int argc, char **argv);
-
-extern int
-cmd_help(COMMANDS *cp, const char *name, FILE *fp, int p_opts);
+error(int rc,
+      int ec,
+      const char *msg,
+      ...);
 
 #endif

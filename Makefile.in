@@ -1,0 +1,215 @@
+# Makefile.in for drvtool
+#
+# @configure_input@
+
+
+# Some 'make' variants does not include CPPFLAGS when compiling, some do
+.c.o:
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+PACKAGE =		@PACKAGE_TARNAME@
+VERSION =		@PACKAGE_VERSION@
+
+srcdir =		@srcdir@
+VPATH =			@srcdir@
+
+DESTDIR =
+PREFIX =		@prefix@
+
+prefix =		${PREFIX}
+exec_prefix =		@exec_prefix@
+datarootdir =		@datarootdir@
+
+BINDIR =		@bindir@
+MANDIR =		@mandir@
+MAN1DIR =		${MANDIR}/man1
+
+PKG_CONFIG = 		@PKG_CONFIG@
+PKG_CONFIG_LIBDIR =	@PKG_CONFIG_LIBDIR@
+PKG_CONFIG_PATH =	@PKG_CONFIG_PATH@
+
+READLINE_CFLAGS =	@READLINE_CFLAGS@
+READLINE_LIBS =		@READLINE_LIBS@
+
+LIBEDIT_CFLAGS =	@LIBEDIT_CFLAGS@
+LIBEDIT_LIBS =		@LIBEDIT_LIBS@
+
+CPPFLAGS =		@CPPFLAGS@ -I. -I$(srcdir) $(LIBEDIT_CFLAGS) $(READLINE_CFLAGS) $(LIBSMBCLIENT_CFLAGS)
+CFLAGS =		@CFLAGS@ -Wall
+LDFLAGS =		@LDFLAGS@
+LIBS =			@LIBS@ $(LIBEDIT_LIBS) $(READLINE_LIBS) $(LIBSMBCLIENT_LIBS)
+
+CC = 			@CC@
+INSTALL =		@INSTALL@
+TAR =			tar
+@SET_MAKE@
+
+VALGRIND =		valgrind
+VALGRINDFLAGS =		--leak-check=full --track-origins=yes --error-exitcode=1 # --show-leak-kinds=all 
+
+DISTCHECKDIR =		/tmp/distcheck-$(PACKAGE)-$(VERSION)
+DISTDIR =		/tmp/build-$(PACKAGE)-$(VERSION)
+
+TESTDIR =		t
+
+PROGRAMS =		drvtool
+
+DRVTOOL_OBJS =		error.o drvtool.o argv.o buffer.o basic.o drives.o strval.o commands.o misc.o opts.o strings.o
+
+
+
+all: $(PROGRAMS)
+
+
+drvtool.h:	argv.h commands.h basic.h drives.h strings.h strval.h misc.h opts.h error.h Makefile
+
+drvtool.o: 	drvtool.c drvtool.h Makefile config.h
+
+argv.o: 	argv.c argv.h drvtool.h Makefile config.h
+opts.o: 	opts.c opts.h drvtool.h Makefile config.h
+basic.o:	basic.c basic.h drvtool.h Makefile config.h
+commands.o:	commands.c commands.h error.h strings.h drvtool.h Makefile config.h
+misc.o:		misc.c misc.h drvtool.h Makefile config.h
+drives.o:	drives.c drvtool.h Makefile config.h
+
+error.o:	error.c error.h Makefile config.h
+buffer.o: 	buffer.c buffer.h Makefile config.h
+strings.o:	strings.c strings.h Makefile config.h
+range.o:	range.c range.h Makefile config.h
+
+
+drvtool: $(DRVTOOL_OBJS)
+	$(CC) $(LDFLAGS) -o drvtool $(DRVTOOL_OBJS) $(LIBS) -lcam
+
+
+# Clean targets
+maintainer-clean:
+	$(MAKE) -f Makefile.dist distclean
+
+distclean:
+	$(MAKE) -f Makefile.dist distclean
+	(cd pkgs && $(MAKE) -f Makefile.dist distclean)
+
+clean mostlyclean:
+	$(MAKE) -f Makefile.dist clean
+
+
+
+# Git targets
+push: 	distclean
+	git add -A && git commit -a && git push
+
+pull:
+	git pull
+
+
+# Install targets
+install install-all: install-bin install-man
+
+install-strip: install-bin-strip install-man
+
+install-bin: $(PROGRAMS)
+	$(INSTALL) -d "$(DESTDIR)$(BINDIR)"
+	$(INSTALL) $(PROGRAMS) "$(DESTDIR)$(BINDIR)"
+
+install-bin-strip: $(PROGRAMS)
+	$(INSTALL) -d "$(DESTDIR)$(BINDIR)"
+	$(INSTALL) -s $(PROGRAMS) "$(DESTDIR)$(BINDIR)"
+
+install-man:  drvtool.man
+	$(INSTALL) -d "$(DESTDIR)$(MAN1DIR)"
+	$(INSTALL) -m 644 drvtool.man "$(DESTDIR)$(MAN1DIR)/drvtool.1"
+	if test -f /usr/share/man/man1/cat.1.gz; then \
+		gzip -f "$(DESTDIR)$(MAN1DIR)/drvtool.1" && \
+	fi
+
+uninstall:
+	for F in drvtool; do \
+		if test -f "$(DESTDIR)$(BINDIR)/$$F"; then rm "$(DESTDIR)$(BINDIR)/$$F"; fi; \
+	done
+	for F in drvtool.1 drvtool.1.gz; do \
+		if test -f "$(DESTDIR)$(MAN1DIR)/$$F"; then rm "$(DESTDIR)$(MAN1DIR)/$$F"; fi; \
+	done
+
+
+# Check targets
+check:
+	@mkdir -p t/d1 t/d2 && touch t/f1 t/f2 && ln -sf f1 t/s1 && $(MAKE) -s check-`uname -s`
+
+check-macos check-Darwin: check-all
+
+check-freebsd check-FreeBSD: check-all
+
+check-sunos check-solaris check-omnios check-illumos check-SunOS: check-all
+
+check-linux check-Linux: check-all
+
+
+CHECKCMD=./drvtool
+CHECKLOG=/tmp/drvtool-checks.log
+
+BASICCHECKS=version echo help pwd cd dir
+
+
+
+check-all: check-basic 
+
+check-basic: drvtool
+	@for T in $(BASICCHECKS); do $(MAKE) -s check-$$T; done
+
+check-version: drvtool
+	@$(CHECKCMD) version >$(CHECKLOG) && echo "drvtool version: OK"
+
+check-cd: drvtool
+	@$(CHECKCMD) cd / >$(CHECKLOG) && echo "drvtool cd: OK"
+
+check-pwd: drvtool
+	@$(CHECKCMD) pwd >$(CHECKLOG) && echo "drvtool pwd: OK"
+
+check-help: drvtool
+	@$(CHECKCMD) help >$(CHECKLOG) && echo "drvtool help: OK"
+
+check-config: drvtool
+	@$(CHECKCMD) config >$(CHECKLOG) && echo "drvtool config: OK"
+
+check-echo: drvtool
+	@$(CHECKCMD) echo foo >$(CHECKLOG) && echo "drvtool echo: OK"
+
+check-dir: drvtool
+	@($(CHECKCMD) dir . && \
+	  $(CHECKCMD) dir -v . && \
+	  $(CHECKCMD) dir -vv . && \
+	  $(CHECKCMD) dir -rv . ) >$(CHECKLOG) && echo "drvtool dir: OK"
+
+
+check-valgrind: acltool
+	@$(MAKE) CHECKCMD="$(VALGRIND) $(VALGRINDFLAGS) $(CHECKCMD)" check-all
+
+
+DISTCHECKDIR=/tmp/distcheck-drvtool-$(VERSION)
+
+distcheck: drvtool-$(VERSION).tar.gz
+	@if test -d $(DISTCHECKDIR); then \
+	  chmod -R +w $(DISTCHECKDIR) && rm -fr $(DISTCHECKDIR); \
+	fi;
+	mkdir -p $(DISTCHECKDIR) && \
+	  gunzip <drvtool-$(VERSION).tar.gz | \
+	    (cd $(DISTCHECKDIR) && tar xf - && \
+	     chmod -R -w drvtool-$(VERSION) && \
+	     mkdir b && cd b && ../drvtool-$(VERSION)/configure && \
+	     $(MAKE) && $(MAKE) -s check) && echo "*** distcheck: OK"
+	@chmod -R +w $(DISTCHECKDIR) && rm -fr $(DISTCHECKDIR);
+
+
+
+dist:	$(PACKAGE)-$(VERSION).tar.gz
+
+$(PACKAGE)-$(VERSION).tar.gz: drvtool
+	rm -fr "$(DISTDIR)" && mkdir -p "$(DISTDIR)/$(PACKAGE)-$(VERSION)" && \
+	  cp -r * "$(DISTDIR)/$(PACKAGE)-$(VERSION)" && \
+	  (cd "$(DISTDIR)/$(PACKAGE)-$(VERSION)" && $(MAKE) distclean)
+	(cd "$(DISTDIR)" && $(TAR) cvf - "$(PACKAGE)-$(VERSION)") | gzip >"$(PACKAGE)-$(VERSION)".tar.gz
+	echo rm -fr "$(DISTDIR)"
+	@echo ""
+	@echo "*** $(PACKAGE)-$(VERSION).tar.gz created"
+

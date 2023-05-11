@@ -1,7 +1,7 @@
 /*
- * commands.h
+ * basic.c - Drive selection commands
  *
- * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2019-2021, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,38 +31,93 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef COMMANDS_H
-#define COMMANDS_H 1
+#ifndef DRIVES_H
+#define DRIVES_H 1
 
-#include "opts.h"
-
-typedef struct command {
-  const char *name;
-  int (*handler)(int argc, char **argv);
-  OPTION *options;
-  const char *args;
-  const char *help;
-} COMMAND;
+#include "commands.h"
 
 
-#define MAXCMDS 1024
+typedef struct drive {
+  char *name;
+  char *path;
+  
+  int fd;
+  
+  struct stat sbuf;
 
-typedef struct commands {
-  int c;
-  COMMAND *v[MAXCMDS];
-} COMMANDS;
+  struct {
+    unsigned int is_file : 1;
+    unsigned int is_ssd  : 1;
+    unsigned int is_ro   : 1;
+  } flags;
+  
+  off_t media_size;
+  off_t sector_size;
+  off_t sectors;
 
+  off_t stripe_size;
+  off_t stripe_offset;
+  off_t stripes;
+  
+  unsigned int fw_sectors;
+  unsigned int fw_heads;
+  unsigned int tracks;
+  
+  off_t front_reserved;
+  
+  char *physical_path;
+  char *provider_name;
+  char *ident;
+  char *vendor;
+  char *product;
+  char *revision;
+  
+  struct {
+    char *path;
+  } cam;
+
+  struct drive *next;
+} DRIVE;
+
+extern DRIVE *selected_drive;
 
 extern int
-cmd_init(COMMANDS *cp);
+drives_load(int rwmode);
+
+extern DRIVE *
+drive_open(const char *name, int rwmode);
 
 extern int
-cmd_register(COMMANDS *cp, COMMAND **v);
+drive_close(DRIVE *dp);
 
 extern int
-cmd_run(COMMANDS *cp, int argc, char **argv);
+drive_flush(DRIVE *dp);
 
 extern int
-cmd_help(COMMANDS *cp, const char *name, FILE *fp, int p_opts);
+drive_delete(DRIVE *dp,
+	     off_t off,
+	     off_t len);
+
+extern int
+drive_blocks2chs(off_t b,
+		 off_t *cv,
+		 off_t *hv,
+		 off_t *sv,
+		 DRIVE *dp);
+
+extern void
+drive_print(FILE *fp,
+	    int idx,
+	    DRIVE *dp,
+	    int verbose);
+
+extern DRIVE *
+drive_select(const char *name);
+
+extern void
+drives_print(int f_idx);
+
+
+extern COMMAND *drive_commands[];
 
 #endif

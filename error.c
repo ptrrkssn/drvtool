@@ -1,7 +1,7 @@
 /*
- * commands.h
+ * error.c
  *
- * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2019-2020, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,38 +31,43 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef COMMANDS_H
-#define COMMANDS_H 1
+#include "config.h"
 
-#include "opts.h"
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include <errno.h>
 
-typedef struct command {
-  const char *name;
-  int (*handler)(int argc, char **argv);
-  OPTION *options;
-  const char *args;
-  const char *help;
-} COMMAND;
+#include "error.h"
 
+char *error_argv0 = NULL;
 
-#define MAXCMDS 1024
-
-typedef struct commands {
-  int c;
-  COMMAND *v[MAXCMDS];
-} COMMANDS;
+jmp_buf error_env;
 
 
-extern int
-cmd_init(COMMANDS *cp);
+int
+error(int rc,
+      int ec,
+      const char *msg,
+      ...) {
+  va_list ap;
 
-extern int
-cmd_register(COMMANDS *cp, COMMAND **v);
+  
+  va_start(ap, msg);
+  
+  if (error_argv0)
+    fprintf(stderr, "%s: ", error_argv0);
+  
+  fprintf(stderr, "%s: ", rc ? (rc < 0 ? "Warning" : "Error") : "Info");
+  vfprintf(stderr, msg, ap);
+  if (ec)
+    fprintf(stderr, ": %s", strerror(ec));
+  putc('\n', stderr);
 
-extern int
-cmd_run(COMMANDS *cp, int argc, char **argv);
+  va_end(ap);
+  
+  if (rc)
+    longjmp(error_env, rc);
 
-extern int
-cmd_help(COMMANDS *cp, const char *name, FILE *fp, int p_opts);
-
-#endif
+  return rc;
+}

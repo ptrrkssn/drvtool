@@ -1,5 +1,5 @@
 /*
- * commands.h
+ * misc.h
  *
  * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
  *
@@ -31,38 +31,67 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef COMMANDS_H
-#define COMMANDS_H 1
+#ifndef MISC_H
+#define MISC_H 1
 
-#include "opts.h"
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/stat.h>
 
-typedef struct command {
-  const char *name;
-  int (*handler)(int argc, char **argv);
-  OPTION *options;
-  const char *args;
-  const char *help;
-} COMMAND;
+#include "drvtool.h"
 
 
-#define MAXCMDS 1024
+/*
+ * Calculate the difference between two struct timespec, returns elapsed time i microseconds.
+ * Also returns the elapsed time and a unit as a string.
+ */
+extern long
+ts_delta(struct timespec *x,
+	 const struct timespec *y,
+	 long *res,
+	 char **unit);
 
-typedef struct commands {
-  int c;
-  COMMAND *v[MAXCMDS];
-} COMMANDS;
 
-
-extern int
-cmd_init(COMMANDS *cp);
 
 extern int
-cmd_register(COMMANDS *cp, COMMAND **v);
+prompt_user(char *buf,
+	    size_t bufsize,
+	    int echo,
+	    const char *prompt,
+	    ...);
+
+extern char *
+strxdup(const char *s1,
+	...);
 
 extern int
-cmd_run(COMMANDS *cp, int argc, char **argv);
+str2time(const char *str,
+	 time_t *vp);
+
+extern char *
+int2str(off_t b,
+	char *buf,
+	size_t bufsize,
+	int b2f);
+
+extern char *
+time2str(time_t t,
+	 char *buf,
+	 size_t bufsize);
+
+
+extern void                                                                          
+spin(FILE *fp);
+
+
+extern void
+data_print(FILE *fp,
+	   unsigned char *buf,
+	   size_t size,
+	   int mode);
 
 extern int
-cmd_help(COMMANDS *cp, const char *name, FILE *fp, int p_opts);
+prompt_yes(const char *msg,
+	   ...);
 
 #endif

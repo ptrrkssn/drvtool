@@ -45,7 +45,9 @@
 typedef enum {
 	      DIGEST_TYPE_INVALID  = -1,
 	      DIGEST_TYPE_NONE     = 0,
+#if HAVE_ADLER32
 	      DIGEST_TYPE_ADLER32  = 1,
+#endif
 	      DIGEST_TYPE_CRC32    = 2,
 	      DIGEST_TYPE_MD5      = 3,
 	      DIGEST_TYPE_SKEIN256 = 4,
@@ -68,7 +70,9 @@ typedef struct digest {
   DIGEST_STATE state;
   union {
     uint32_t     crc32;
+#if HAVE_ADLER32
     uint32_t     adler32;
+#endif
     MD5_CTX      md5;
     SKEIN256_CTX skein256;
     SHA256_CTX   sha256;
@@ -81,7 +85,9 @@ typedef struct digest {
 /*
  * Result buffer sizes
  */
+#if HAVE_ADLER32
 #define DIGEST_BUFSIZE_ADLER32  sizeof(uint32_t)
+#endif
 #define DIGEST_BUFSIZE_CRC32    sizeof(uint32_t)
 #define DIGEST_BUFSIZE_MD5      16
 #define DIGEST_BUFSIZE_SKEIN256 32

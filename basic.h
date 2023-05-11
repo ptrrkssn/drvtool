@@ -1,7 +1,7 @@
 /*
- * commands.h
+ * basic.c - Basic CLI commands
  *
- * Copyright (c) 2020, Peter Eriksson <pen@lysator.liu.se>
+ * Copyright (c) 2019-2020, Peter Eriksson <pen@lysator.liu.se>
  *
  * All rights reserved.
  * 
@@ -31,38 +31,11 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef COMMANDS_H
-#define COMMANDS_H 1
+#ifndef BASIC_H
+#define BASIC_H 1
 
-#include "opts.h"
+#include "commands.h"
 
-typedef struct command {
-  const char *name;
-  int (*handler)(int argc, char **argv);
-  OPTION *options;
-  const char *args;
-  const char *help;
-} COMMAND;
-
-
-#define MAXCMDS 1024
-
-typedef struct commands {
-  int c;
-  COMMAND *v[MAXCMDS];
-} COMMANDS;
-
-
-extern int
-cmd_init(COMMANDS *cp);
-
-extern int
-cmd_register(COMMANDS *cp, COMMAND **v);
-
-extern int
-cmd_run(COMMANDS *cp, int argc, char **argv);
-
-extern int
-cmd_help(COMMANDS *cp, const char *name, FILE *fp, int p_opts);
+extern COMMAND *basic_commands[];
 
 #endif
