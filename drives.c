@@ -648,9 +648,11 @@ drive_open(const char *name,
   dp->tracks = 0;
   if (dp->fw_heads && dp->fw_sectors && dp->stripe_size)
     dp->tracks = dp->media_size / (dp->fw_heads * dp->fw_sectors * dp->stripe_size);
-  
+
   dp->front_reserved = 0;
+#ifdef DIOCGFRONTSTUFF
   (void) ioctl(dp->fd, DIOCGFRONTSTUFF, &dp->front_reserved);
+#endif
   
   dp->provider_name = NULL;
   pnbuf[0] = '\0';

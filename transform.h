@@ -34,7 +34,6 @@
 #define TRANSFORM_H 1
 
 #include <sys/types.h>
-#include <crypto/rijndael.h>
 
 typedef enum {
 	      TRANSFORM_TYPE_NONE = 0,
